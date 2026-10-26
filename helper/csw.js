@@ -29,6 +29,10 @@ const DEFAULT_CONFIG = {
   daemonUrl: 'http://localhost:8765',
   ntfyServer: 'https://ntfy.sh',
   ntfyTopic: null, // generated on first run
+  // The watch app reads usage from this topic. Do not subscribe to it on the
+  // phone: it gets a silent status message whenever usage changes.
+  statusTopic: null, // defaults to `${ntfyTopic}-status`
+  statusHeartbeatMinutes: 30,
   pollSeconds: 120,
   thresholds: [50, 75, 90, 100],
   notifyCompleted: true,
@@ -72,6 +76,7 @@ function loadConfig() {
     writeJson(CONFIG_PATH, config);
     log(`Created ${CONFIG_PATH} with new ntfy topic ${config.ntfyTopic}`);
   }
+  config.statusTopic ??= `${config.ntfyTopic}-status`;
   return config;
 }
 
@@ -167,6 +172,26 @@ async function push(config, { title, message, priority = 3, tags = [] }) {
   });
   if (!res.ok) throw new Error(`ntfy returned HTTP ${res.status}`);
   log(`Pushed: ${title} — ${message}`);
+}
+
+// Publishes status.json to the status topic for the watch app. ntfy.sh limits
+// anonymous publishing per day, so only publish when the numbers change or
+// when the heartbeat is due (the watch shows how old the data is).
+async function publishStatus(config, state, status) {
+  const { updated_at, ...rest } = status;
+  const signature = JSON.stringify(rest);
+  const heartbeatMs = config.statusHeartbeatMinutes * 60 * 1000;
+  const due = Date.now() - (state.statusPublishedAt ?? 0) >= heartbeatMs;
+  if (signature === state.statusSignature && !due) return;
+
+  const res = await fetch(config.ntfyServer, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ topic: config.statusTopic, message: JSON.stringify(status), priority: 1 }),
+  });
+  if (!res.ok) throw new Error(`ntfy status publish returned HTTP ${res.status}`);
+  state.statusSignature = signature;
+  state.statusPublishedAt = Date.now();
 }
 
 // ---------- Polling ----------
@@ -298,11 +323,6 @@ async function poll(config, { notify = true } = {}) {
 
   const usage = await checkUsage(config, state, doNotify);
   const sessions = await checkSessions(config, state, doNotify);
-  // A read-only poll (--status) must not mark anything as already notified.
-  if (notify) {
-    state.initialized = true;
-    writeJson(STATE_PATH, state);
-  }
 
   const status = {
     updated_at: new Date().toISOString(),
@@ -311,12 +331,24 @@ async function poll(config, { notify = true } = {}) {
       label: limitLabel(l),
       percent: l.percent,
       severity: l.severity,
-      resets_at: l.resets_at,
+      // Normalized to millisecond ISO 8601, which Swift's date parser accepts.
+      resets_at: l.resets_at ? new Date(l.resets_at).toISOString() : null,
       is_active: l.is_active,
     })),
     sessions,
   };
   writeJson(STATUS_PATH, status);
+
+  // A read-only poll (--status) must not mark anything as already notified.
+  if (notify) {
+    try {
+      await publishStatus(config, state, status);
+    } catch (err) {
+      log(`Status publish failed: ${err.message}`);
+    }
+    state.initialized = true;
+    writeJson(STATE_PATH, state);
+  }
   return status;
 }
 

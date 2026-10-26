@@ -1,0 +1,9 @@
+// Shared build settings for the watch app and the widget extension.
+
+// Status topic the Mac helper publishes to (`<ntfyTopic>-status`).
+// Set it in Secrets.xcconfig, which is gitignored:
+//   CSW_STATUS_TOPIC = csw-xxxxxxxxxxxxxxxxxxxxxxxx-status
+CSW_STATUS_TOPIC =
+CSW_NTFY_SERVER = https:/$()/ntfy.sh
+
+#include? "Secrets.xcconfig"

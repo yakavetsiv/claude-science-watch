@@ -6,3 +6,6 @@ xcuserdata/
 DerivedData/
 build/
 *.xcuserstate
+
+# Watch app secrets
+watch/Config/Secrets.xcconfig

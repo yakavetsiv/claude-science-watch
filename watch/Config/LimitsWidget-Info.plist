@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>NSExtension</key>
+	<dict>
+		<key>NSExtensionPointIdentifier</key>
+		<string>com.apple.widgetkit-extension</string>
+	</dict>
+	<key>CSWStatusTopic</key>
+	<string>$(CSW_STATUS_TOPIC)</string>
+	<key>CSWNtfyServer</key>
+	<string>$(CSW_NTFY_SERVER)</string>
+</dict>
+</plist>
