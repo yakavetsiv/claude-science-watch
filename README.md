@@ -24,6 +24,7 @@ Do not subscribe to the `-status` topic on your phone. It is a data feed for the
 `watch/ClaudeScienceWatch.xcodeproj` is a watch-only app (watchOS 11 or later) with a widget extension. Both fetch the latest message from the `-status` topic on ntfy.sh, so the watch does not need to reach your Mac.
 
 - **App:** 5-hour and weekly gauges, reset countdowns, running sessions, and how old the data is (orange when older than 45 minutes).
+- **Expiry reminders:** with a free (Personal Team) account the install expires after 7 days. The app reads the expiry date from its provisioning profile, shows it at the bottom, and schedules watch notifications 24 hours and 1 hour before it. The *Expiry reminders* toggle turns them off. Reminders are rescheduled each time the app opens, so open it once after every redeploy.
 - **Complications:**
   - *Limit rings*: two concentric rings. The outer ring is the 5-hour limit, the inner (cyan) ring is the weekly limit, and the middle shows the 5-hour percentage only. Circular slots show just the rings; rectangular slots add the reset times (`5h 8:00`, `Wk Thu`).
   - *5-hour limit* and *Weekly limit*: circular and corner gauges.

@@ -5,6 +5,8 @@ struct ContentView: View {
     @State private var status: UsageStatus? = StatusFeed.cached
     @State private var error: String?
     @State private var loading = false
+    @State private var remindersSet = 0
+    @AppStorage(ExpiryReminder.enabledKey) private var remindersEnabled = true
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
@@ -39,6 +41,19 @@ struct ContentView: View {
                         .font(.footnote)
                         .foregroundStyle(.orange)
                 }
+                if let expiry = ExpiryReminder.expirationDate {
+                    Section {
+                        Toggle("Expiry reminders", isOn: $remindersEnabled)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Install expires \(expiry.formatted(date: .abbreviated, time: .shortened))")
+                            if remindersEnabled {
+                                Text(remindersSet > 0 ? "Reminders 24 h and 1 h before" : "Notifications not allowed")
+                                    .foregroundStyle(remindersSet > 0 ? Color.secondary : Color.orange)
+                            }
+                        }
+                        .font(.footnote)
+                    }
+                }
             }
             .navigationTitle("Claude Science")
             .overlay {
@@ -53,7 +68,13 @@ struct ContentView: View {
                 }
             }
         }
-        .task { await refresh() }
+        .task {
+            remindersSet = await ExpiryReminder.schedule()
+            await refresh()
+        }
+        .onChange(of: remindersEnabled) {
+            Task { remindersSet = await ExpiryReminder.schedule() }
+        }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { Task { await refresh() } }
         }
