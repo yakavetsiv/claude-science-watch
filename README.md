@@ -25,6 +25,7 @@ Do not subscribe to the `-status` topic on your phone. It is a data feed for the
 
 - **App:** 5-hour and weekly gauges, reset countdowns, running sessions, and how old the data is (orange when older than 45 minutes).
 - **Complications:**
+  - *Limit rings*: two concentric rings. The outer ring is the 5-hour limit, the inner (cyan) ring is the weekly limit, and the middle shows the 5-hour percentage only. Circular slots show just the rings; rectangular slots add the reset times (`5h 8:00`, `Wk Thu`).
   - *5-hour limit* and *Weekly limit*: circular and corner gauges.
   - *Claude limits*: rectangular (both bars plus the 5-hour reset) and inline (`5h 6% · Wk 23%`).
 
