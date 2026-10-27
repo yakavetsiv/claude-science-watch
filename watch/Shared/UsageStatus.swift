@@ -47,12 +47,22 @@ struct Approval: Codable, Hashable, Identifiable {
     let createdAt: Date?
 }
 
+/// Added by the relay Worker when it serves the status: how many requests
+/// it handled since midnight UTC, against Cloudflare's free daily limit.
+struct RelayStats: Codable, Hashable {
+    let requestsToday: Int
+    let dailyLimit: Int
+
+    var fraction: Double { min(Double(requestsToday) / Double(max(dailyLimit, 1)), 1) }
+}
+
 struct UsageStatus: Codable, Hashable {
     let updatedAt: Date
     let limits: [UsageLimit]
     let sessions: SessionCounts?
     var approvals: [Approval]? = nil
     var replyTopic: String? = nil
+    var relay: RelayStats? = nil
 
     /// A session is waiting on the user: a permission request or a question.
     var needsAttention: Bool {
@@ -70,7 +80,7 @@ struct UsageStatus: Codable, Hashable {
 
     func asOf(_ date: Date) -> UsageStatus {
         UsageStatus(updatedAt: updatedAt, limits: limits.map { $0.asOf(date) }, sessions: sessions,
-                    approvals: approvals, replyTopic: replyTopic)
+                    approvals: approvals, replyTopic: replyTopic, relay: relay)
     }
 
     /// Reset times still ahead of `date`, so a widget timeline can show the
@@ -99,6 +109,7 @@ struct UsageStatus: Codable, Hashable {
             waiting: [SessionName(project: "Example project", name: "Test")]
         ),
         approvals: [Approval(id: "sample", nonce: "", title: "Run python", detail: "import numpy as np",
-                             project: "Example project", session: "Test", createdAt: .now)]
+                             project: "Example project", session: "Test", createdAt: .now)],
+        relay: RelayStats(requestsToday: 12_480, dailyLimit: 100_000)
     )
 }

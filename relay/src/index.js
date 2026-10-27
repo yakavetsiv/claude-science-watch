@@ -7,12 +7,15 @@
 //   GET  /replies?after= Mac   -> answers with seq > after
 //
 // Every request needs `Authorization: Bearer <RELAY_TOKEN>` (a Worker secret).
+// GET /status adds `relay.requests_today`: requests counted since midnight
+// UTC, when Cloudflare's free daily request limit resets.
 // One Durable Object holds everything, so reads always see the last write.
 
 import { DurableObject } from 'cloudflare:workers';
 
 const MAX_BODY = 64 * 1024;
 const REPLY_TTL_MS = 60 * 60 * 1000;
+const DAILY_LIMIT = 100000; // Workers free plan
 
 export default {
   async fetch(request, env) {
@@ -26,6 +29,7 @@ export class Relay extends DurableObject {
   async fetch(request) {
     const url = new URL(request.url);
     const route = `${request.method} ${url.pathname}`;
+    const requestsToday = await this.countRequest();
 
     if (route === 'PUT /status') {
       const body = await readBody(request);
@@ -42,7 +46,7 @@ export class Relay extends DurableObject {
     if (route === 'GET /status') {
       const status = await this.ctx.storage.get('status');
       if (!status) return json({ error: 'no status yet' }, 404);
-      return new Response(status, { headers: { 'Content-Type': 'application/json' } });
+      return json({ ...JSON.parse(status), relay: { requests_today: requestsToday, daily_limit: DAILY_LIMIT } });
     }
 
     if (route === 'POST /reply') {
@@ -78,6 +82,14 @@ export class Relay extends DurableObject {
     }
 
     return json({ error: 'not found' }, 404);
+  }
+
+  async countRequest() {
+    const day = new Date().toISOString().slice(0, 10);
+    const counter = (await this.ctx.storage.get('requests')) ?? {};
+    const count = counter.day === day ? counter.count + 1 : 1;
+    await this.ctx.storage.put('requests', { day, count });
+    return count;
   }
 }
 

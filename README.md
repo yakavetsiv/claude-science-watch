@@ -47,6 +47,8 @@ ntfy.sh allows 250 messages a day per IP address. Status updates and answers can
 2. Put the Worker URL and the token in `~/.config/claude-science-watch/config.json` as `relayUrl` and `relayToken`, and restart the helper.
 3. Add both to `watch/Config/Secrets.xcconfig` (see Build below) and rebuild the watch app.
 
+The app's **Relay** section, at the bottom, shows how many requests the Worker has handled today against the 100,000 limit. Cloudflare resets the count at midnight UTC.
+
 Every request needs the token. Anyone with it can read the status and answer permission requests, so keep it private.
 
 ## Watch app

@@ -48,11 +48,14 @@ struct ContentView: View {
                     if let sessions = status.sessions {
                         SessionsSection(sessions: sessions)
                     }
-                    Section {
-                        Text("Updated \(status.updatedAt, style: .relative) ago")
-                            .font(.footnote)
+                    // A plain caption, not a card: it is information, not a control.
+                    TimelineView(.everyMinute) { context in
+                        Text(updatedText(status.updatedAt, now: context.date))
+                            .font(.caption2)
                             .foregroundStyle(isStale(status) ? .orange : .secondary)
+                            .frame(maxWidth: .infinity)
                     }
+                    .listRowBackground(Color.clear)
                 } else if !loading {
                     Text(error ?? "No data yet.")
                         .foregroundStyle(.secondary)
@@ -74,6 +77,9 @@ struct ContentView: View {
                         }
                         .font(.footnote)
                     }
+                }
+                if let relay = status?.relay {
+                    RelayRow(relay: relay)
                 }
             }
             .navigationTitle("Claude Science")
@@ -113,6 +119,13 @@ struct ContentView: View {
     /// The helper publishes at least every 30 minutes while the Mac is awake.
     private func isStale(_ status: UsageStatus) -> Bool {
         Date.now.timeIntervalSince(status.updatedAt) > 45 * 60
+    }
+
+    private func updatedText(_ date: Date, now: Date) -> String {
+        let minutes = Int(now.timeIntervalSince(date) / 60)
+        if minutes < 1 { return "Updated just now" }
+        if minutes < 60 { return "Updated \(minutes) min ago" }
+        return "Updated \(date.formatted(date: .omitted, time: .shortened))"
     }
 
     private func answer(_ approval: Approval, _ decision: StatusFeed.Decision, replyTopic: String?) async {
@@ -187,12 +200,71 @@ struct LimitRow: View {
                 .gaugeStyle(.accessoryLinearCapacity)
                 .tint(LimitColor.color(for: limit))
             if let resetsAt = limit.resetsAt {
-                Text("Resets in \(resetsAt, style: .relative)")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                // Minutes, not a ticking seconds count, so it stays on one line.
+                TimelineView(.everyMinute) { context in
+                    Text(Self.resetText(resetsAt, now: context.date))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
             }
         }
         .padding(.vertical, 2)
+    }
+
+    /// "Resets in 47 min", "Resets in 3 h 12 min", or "Resets Thu 1:00 AM"
+    /// once it is more than a day away.
+    static func resetText(_ date: Date, now: Date) -> String {
+        let minutes = max(Int(date.timeIntervalSince(now) / 60), 1)
+        if minutes < 60 { return "Resets in \(minutes) min" }
+        if minutes < 24 * 60 {
+            let rest = minutes % 60
+            return rest == 0 ? "Resets in \(minutes / 60) h" : "Resets in \(minutes / 60) h \(rest) min"
+        }
+        return "Resets \(date.formatted(.dateTime.weekday(.abbreviated).hour().minute()))"
+    }
+}
+
+/// Requests the relay Worker handled today, against Cloudflare's free
+/// limit. The count resets at midnight UTC.
+struct RelayRow: View {
+    let relay: RelayStats
+
+    var body: some View {
+        Section("Relay") {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text("Requests today").font(.footnote.weight(.semibold))
+                    Spacer()
+                    Text(relay.requestsToday.formatted())
+                        .font(.footnote.weight(.semibold).monospacedDigit())
+                        .foregroundStyle(color)
+                }
+                Gauge(value: relay.fraction) { EmptyView() }
+                    .gaugeStyle(.accessoryLinearCapacity)
+                    .tint(color)
+                Text("of \(relay.dailyLimit / 1000)k · resets \(Self.nextMidnightUTC.formatted(.dateTime.hour()))")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            .padding(.vertical, 2)
+        }
+    }
+
+    private var color: Color {
+        switch relay.fraction * 100 {
+        case ..<75: .green
+        case ..<90: .orange
+        default: .red
+        }
+    }
+
+    private static var nextMidnightUTC: Date {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
+        return calendar.nextDate(after: .now, matching: DateComponents(hour: 0, minute: 0), matchingPolicy: .nextTime)
+            ?? .now
     }
 }
 
@@ -235,7 +307,7 @@ struct ApprovalSection: View {
             }
         } footer: {
             if isPrimary && !sending {
-                Label("Double tap to allow once", systemImage: "hand.tap")
+                Label("Double tap: Allow once", systemImage: "hand.tap")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
@@ -318,7 +390,7 @@ struct SessionsSection: View {
                     SessionRow(session: session, icon: "hand.raised.fill", tint: .orange)
                 }
                 ForEach(Array(running.enumerated()), id: \.offset) { _, session in
-                    SessionRow(session: session, icon: "gearshape.2.fill", tint: .green)
+                    SessionRow(session: session, icon: "gearshape.fill", tint: .green)
                 }
                 if running.isEmpty && waiting.isEmpty {
                     Text("Nothing running")
@@ -347,10 +419,12 @@ struct SessionRow: View {
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
+            // Fixed width so names line up whatever the icon's shape.
             Image(systemName: icon)
                 .font(.caption2)
                 .foregroundStyle(tint)
                 .symbolEffect(.pulse, isActive: icon.hasPrefix("gearshape"))
+                .frame(width: 16)
             VStack(alignment: .leading, spacing: 1) {
                 Text(session.name)
                     .font(.footnote.weight(.semibold))
