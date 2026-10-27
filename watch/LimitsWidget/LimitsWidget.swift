@@ -32,7 +32,10 @@ struct LimitsProvider: TimelineProvider {
             // on time even if the next fetch is late.
             let dates = [now] + (status?.upcomingResets(after: now) ?? [])
             let entries = dates.map { LimitsEntry(date: $0, status: status?.asOf($0)) }
-            completion(Timeline(entries: entries, policy: .after(now.addingTimeInterval(15 * 60))))
+            // Check sooner while a session waits on the user, so the hand
+            // clears soon after the request is answered.
+            let wait: TimeInterval = (status?.needsAttention ?? false) ? 5 * 60 : 15 * 60
+            completion(Timeline(entries: entries, policy: .after(now.addingTimeInterval(wait))))
         }
     }
 }
@@ -140,6 +143,7 @@ struct BothLimitsView: View {
 struct ConcentricRings: View {
     let fiveHour: UsageLimit?
     let weekly: UsageLimit?
+    var attention = false
 
     var body: some View {
         GeometryReader { geo in
@@ -151,10 +155,21 @@ struct ConcentricRings: View {
                     .padding(line / 2)
                 ring(weekly?.fraction ?? 0, tint: innerTint, line: line)
                     .padding(line * 1.5 + gap)
-                Text(fiveHour.map { "\(Int($0.percent.rounded()))" } ?? "–")
-                    .font(.system(size: size * 0.3, weight: .semibold, design: .rounded).monospacedDigit())
-                    .minimumScaleFactor(0.5)
-                    .padding(line * 2.5 + gap)
+                if attention {
+                    // A session is waiting on you: the middle shows a hand
+                    // instead of the 5-hour number.
+                    Image(systemName: "hand.raised.fill")
+                        .resizable()
+                        .scaledToFit()
+                        .foregroundStyle(.orange)
+                        .widgetAccentable()
+                        .padding(line * 2.6 + gap)
+                } else {
+                    Text(fiveHour.map { "\(Int($0.percent.rounded()))" } ?? "–")
+                        .font(.system(size: size * 0.3, weight: .semibold, design: .rounded).monospacedDigit())
+                        .minimumScaleFactor(0.5)
+                        .padding(line * 2.5 + gap)
+                }
             }
             .frame(width: size, height: size)
             .position(x: geo.size.width / 2, y: geo.size.height / 2)
@@ -193,20 +208,32 @@ struct LimitRingsView: View {
     var body: some View {
         let fiveHour = entry.status?.fiveHour
         let weekly = entry.status?.weekly
+        let attention = entry.status?.needsAttention ?? false
 
         switch family {
         case .accessoryRectangular:
             HStack(spacing: 8) {
-                ConcentricRings(fiveHour: fiveHour, weekly: weekly)
+                ConcentricRings(fiveHour: fiveHour, weekly: weekly, attention: attention)
                     .aspectRatio(1, contentMode: .fit)
                 VStack(alignment: .leading, spacing: 2) {
-                    resetLine("5h", fiveHour)
-                    resetLine("Wk", weekly)
+                    if attention, let reason = entry.status?.attentionText {
+                        Text("Needs you")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.orange)
+                            .widgetAccentable()
+                        Text(reason)
+                            .font(.caption2)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.6)
+                    } else {
+                        resetLine("5h", fiveHour)
+                        resetLine("Wk", weekly)
+                    }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
         default:
-            ConcentricRings(fiveHour: fiveHour, weekly: weekly)
+            ConcentricRings(fiveHour: fiveHour, weekly: weekly, attention: attention)
         }
     }
 
@@ -293,6 +320,7 @@ struct LimitsWidgetBundle: WidgetBundle {
     LimitRingsWidget()
 } timeline: {
     LimitsEntry(date: .now, status: .sample)
+    LimitsEntry(date: .now, status: .sampleNeedsYou)
 }
 
 #Preview("Rectangular", as: .accessoryRectangular) {

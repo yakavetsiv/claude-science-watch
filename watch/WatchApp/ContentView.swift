@@ -22,7 +22,8 @@ struct ContentView: View {
                     if !waiting.isEmpty {
                         Section("Needs permission") {
                             ForEach(waiting) { approval in
-                                ApprovalRow(approval: approval, sending: sending == approval.id) { decision in
+                                ApprovalRow(approval: approval, sending: sending == approval.id,
+                                            isPrimary: approval.id == waiting.first?.id) { decision in
                                     Task { await answer(approval, decision, replyTopic: status.replyTopic) }
                                 }
                             }
@@ -159,6 +160,8 @@ struct LimitRow: View {
 struct ApprovalRow: View {
     let approval: Approval
     let sending: Bool
+    /// The first waiting request: a double tap presses its Allow button.
+    let isPrimary: Bool
     let onAnswer: (StatusFeed.Decision) -> Void
 
     var body: some View {
@@ -182,6 +185,7 @@ struct ApprovalRow: View {
                 HStack {
                     Button("Allow") { onAnswer(.allow) }
                         .tint(.green)
+                        .handGestureShortcut(.primaryAction, isEnabled: isPrimary)
                     Button("Deny", role: .destructive) { onAnswer(.deny) }
                 }
                 .buttonStyle(.borderedProminent)

@@ -45,6 +45,17 @@ struct UsageStatus: Codable, Hashable {
     var approvals: [Approval]? = nil
     var replyTopic: String? = nil
 
+    /// A session is waiting on the user: a permission request or a question.
+    var needsAttention: Bool {
+        !(approvals ?? []).isEmpty || (sessions?.needsInput ?? 0) > 0
+    }
+
+    /// Short reason for the complication, such as "Run python?".
+    var attentionText: String? {
+        if let first = approvals?.first { return "\(first.title)?" }
+        return needsAttention ? "Needs input" : nil
+    }
+
     var fiveHour: UsageLimit? { limits.first { $0.kind == "session" } }
     var weekly: UsageLimit? { limits.first { $0.kind == "weekly_all" } }
 
@@ -68,5 +79,13 @@ struct UsageStatus: Codable, Hashable {
                        resetsAt: .now.addingTimeInterval(3 * 86400)),
         ],
         sessions: SessionCounts(processing: 1, needsInput: 0)
+    )
+
+    static let sampleNeedsYou = UsageStatus(
+        updatedAt: .now,
+        limits: sample.limits,
+        sessions: SessionCounts(processing: 0, needsInput: 1),
+        approvals: [Approval(id: "sample", nonce: "", title: "Run python", detail: "import numpy as np",
+                             project: "Example project", session: "Test", createdAt: .now)]
     )
 }
