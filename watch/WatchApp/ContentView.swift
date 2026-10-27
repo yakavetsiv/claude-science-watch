@@ -19,14 +19,11 @@ struct ContentView: View {
                 if let status {
                     let current = status.asOf(.now)
                     let waiting = (status.approvals ?? []).filter { !answered.contains($0.id) }
-                    if !waiting.isEmpty {
-                        Section("Needs permission") {
-                            ForEach(waiting) { approval in
-                                ApprovalRow(approval: approval, sending: sending == approval.id,
-                                            isPrimary: approval.id == waiting.first?.id) { decision in
-                                    Task { await answer(approval, decision, replyTopic: status.replyTopic) }
-                                }
-                            }
+                    ForEach(waiting) { approval in
+                        ApprovalSection(approval: approval, sending: sending == approval.id,
+                                        isPrimary: approval.id == waiting.first?.id,
+                                        showsHeader: approval.id == waiting.first?.id) { decision in
+                            Task { await answer(approval, decision, replyTopic: status.replyTopic) }
                         }
                     }
                     if let limit = current.fiveHour {
@@ -116,6 +113,14 @@ struct ContentView: View {
     }
 
     private func refresh() async {
+        #if DEBUG
+        // `-demoApprovals` (simulator screenshots) shows a sample request
+        // without touching the real feed.
+        if ProcessInfo.processInfo.arguments.contains("-demoApprovals") {
+            status = .sampleNeedsYou
+            return
+        }
+        #endif
         loading = true
         defer { loading = false }
         do {
@@ -138,10 +143,10 @@ struct LimitRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
-                Text(title).font(.headline)
+                Text(title).font(.subheadline.weight(.semibold))
                 Spacer()
                 Text("\(Int(limit.percent.rounded()))%")
-                    .font(.headline.monospacedDigit())
+                    .font(.subheadline.weight(.semibold).monospacedDigit())
                     .foregroundStyle(LimitColor.color(for: limit))
             }
             Gauge(value: limit.fraction) { EmptyView() }
@@ -149,7 +154,7 @@ struct LimitRow: View {
                 .tint(LimitColor.color(for: limit))
             if let resetsAt = limit.resetsAt {
                 Text("Resets in \(resetsAt, style: .relative)")
-                    .font(.footnote)
+                    .font(.caption2)
                     .foregroundStyle(.secondary)
             }
         }
@@ -157,41 +162,109 @@ struct LimitRow: View {
     }
 }
 
-struct ApprovalRow: View {
+/// One permission request: a card with what is asked, then full-width Allow
+/// and Deny buttons. All three share one row so their edges line up.
+struct ApprovalSection: View {
     let approval: Approval
     let sending: Bool
     /// The first waiting request: a double tap presses its Allow button.
     let isPrimary: Bool
+    let showsHeader: Bool
     let onAnswer: (StatusFeed.Decision) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Label(approval.title, systemImage: "lock.fill")
-                .font(.headline)
-                .foregroundStyle(.orange)
-            if let session = approval.session {
-                Text([approval.project, session].compactMap { $0 }.joined(separator: ": "))
+        Section {
+            VStack(spacing: 8) {
+                card
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.white.opacity(0.12), in: RoundedRectangle(cornerRadius: 14))
+                if sending {
+                    HStack(spacing: 8) {
+                        ProgressView().frame(width: 20, height: 20)
+                        Text("Sending…").foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 44)
+                } else {
+                    answerButton("Allow", icon: "checkmark", decision: .allow, tint: .green)
+                        .handGestureShortcut(.primaryAction, isEnabled: isPrimary)
+                    answerButton("Deny", icon: "xmark", decision: .deny, tint: .red)
+                }
+            }
+            .listRowBackground(Color.clear)
+            .listRowInsets(EdgeInsets())
+        } header: {
+            if showsHeader {
+                Text("Needs permission").foregroundStyle(.orange)
+            }
+        } footer: {
+            if isPrimary && !sending {
+                Label("Double tap to allow", systemImage: "hand.tap")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
+        }
+    }
+
+    // Sizes follow the system apps: body for the main line, footnote and
+    // caption for secondary text, small monospaced code.
+    private var card: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .firstTextBaseline, spacing: 5) {
+                Image(systemName: "lock.fill")
+                    .font(.caption2)
+                    .foregroundStyle(.orange)
+                Text(approval.title)
+                    .font(.subheadline.weight(.semibold))
+                    .lineLimit(2)
+            }
+            if let session = approval.session {
+                Text([approval.project, session].compactMap { $0 }.joined(separator: " · "))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
             if let detail = approval.detail, !detail.isEmpty {
                 Text(detail)
-                    .font(.system(.caption2, design: .monospaced))
-                    .lineLimit(3)
-            }
-            if sending {
-                ProgressView()
-            } else {
-                HStack {
-                    Button("Allow") { onAnswer(.allow) }
-                        .tint(.green)
-                        .handGestureShortcut(.primaryAction, isEnabled: isPrimary)
-                    Button("Deny", role: .destructive) { onAnswer(.deny) }
-                }
-                .buttonStyle(.borderedProminent)
+                    .font(.system(size: 11, design: .monospaced))
+                    .lineLimit(4)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 4)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
+                    .padding(.top, 2)
             }
         }
-        .padding(.vertical, 4)
+    }
+
+    /// Allow is the filled, primary button. Deny is a quieter grey button
+    /// with red text, so the two are easy to tell apart at a glance.
+    private func answerButton(_ title: String, icon: String, decision: StatusFeed.Decision,
+                              tint: Color) -> some View {
+        Button { onAnswer(decision) } label: {
+            Label(title, systemImage: icon)
+        }
+        .buttonStyle(PillButtonStyle(
+            fill: decision == .allow ? tint : .white.opacity(0.14),
+            text: decision == .allow ? .black : tint
+        ))
+    }
+}
+
+/// Full-width capsule button that spans exactly the width it is given, so it
+/// lines up with the card above (system bordered buttons add their own inset).
+struct PillButtonStyle: ButtonStyle {
+    let fill: Color
+    let text: Color
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.footnote.weight(.semibold))
+            .foregroundStyle(text)
+            .frame(maxWidth: .infinity, minHeight: 36)
+            .background(fill, in: Capsule())
+            .opacity(configuration.isPressed ? 0.6 : 1)
+            .contentShape(Capsule())
     }
 }
 
