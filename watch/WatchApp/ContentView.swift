@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchKit
 import WidgetKit
 
 struct ContentView: View {
@@ -84,6 +85,15 @@ struct ContentView: View {
             remindersSet = await ExpiryReminder.schedule()
             await refresh()
         }
+        // While the app is on screen (including wrist-down Always On),
+        // check every 10 seconds so new requests buzz almost at once.
+        .task(id: scenePhase) {
+            guard scenePhase != .background else { return }
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(10))
+                if !Task.isCancelled { await refresh() }
+            }
+        }
         .onChange(of: remindersEnabled) {
             Task { remindersSet = await ExpiryReminder.schedule() }
         }
@@ -109,6 +119,20 @@ struct ContentView: View {
             await refresh()
         } catch {
             self.error = "Answer not sent: \(error.localizedDescription)"
+            WKInterfaceDevice.current().play(.failure)
+        }
+    }
+
+    /// Buzzes when requests appear or clear between two statuses: a
+    /// notification tap for a new request, a success tap when one this watch
+    /// answered is gone (the helper applied it).
+    private func playHaptics(from old: UsageStatus?, to new: UsageStatus) {
+        let before = Set((old?.approvals ?? []).map(\.id))
+        let after = Set((new.approvals ?? []).map(\.id))
+        if !after.subtracting(before).isEmpty {
+            WKInterfaceDevice.current().play(.notification)
+        } else if !before.subtracting(after).intersection(answered).isEmpty {
+            WKInterfaceDevice.current().play(.success)
         }
     }
 
@@ -126,6 +150,8 @@ struct ContentView: View {
         do {
             let latest = try await StatusFeed.fetchLatest()
             if latest != status {
+                playHaptics(from: status, to: latest)
+                answered.formIntersection((latest.approvals ?? []).map(\.id))
                 status = latest
                 WidgetCenter.shared.reloadAllTimelines()
             }

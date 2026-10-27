@@ -32,10 +32,10 @@ struct LimitsProvider: TimelineProvider {
             // on time even if the next fetch is late.
             let dates = [now] + (status?.upcomingResets(after: now) ?? [])
             let entries = dates.map { LimitsEntry(date: $0, status: status?.asOf($0)) }
-            // Check sooner while a session waits on the user, so the hand
-            // clears soon after the request is answered.
-            let wait: TimeInterval = (status?.needsAttention ?? false) ? 5 * 60 : 15 * 60
-            completion(Timeline(entries: entries, policy: .after(now.addingTimeInterval(wait))))
+            // Ask for a refresh every 5 minutes. watchOS rations refreshes
+            // (roughly 40-70 a day), so it may stretch this; the app's
+            // background checks also reload the timeline when the status changes.
+            completion(Timeline(entries: entries, policy: .after(now.addingTimeInterval(5 * 60))))
         }
     }
 }
