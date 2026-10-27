@@ -6,4 +6,12 @@
 CSW_STATUS_TOPIC =
 CSW_NTFY_SERVER = https:/$()/ntfy.sh
 
+// Optional relay Worker (relay/ in the repo). When both are set, the app
+// reads status and sends answers through it instead of ntfy. Set them in
+// Secrets.xcconfig, like the topic:
+//   CSW_RELAY_URL = https:/$()/claude-science-relay.<you>.workers.dev
+//   CSW_RELAY_TOKEN = <relayToken from the helper config>
+CSW_RELAY_URL =
+CSW_RELAY_TOKEN =
+
 #include? "Secrets.xcconfig"

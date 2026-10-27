@@ -1,0 +1,12 @@
+# Relay between the Mac helper and the watch app. See README.md.
+name = "claude-science-relay"
+main = "src/index.js"
+compatibility_date = "2026-06-01"
+
+[[durable_objects.bindings]]
+name = "RELAY"
+class_name = "Relay"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Relay"]

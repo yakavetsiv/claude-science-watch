@@ -32,11 +32,16 @@ const DEFAULT_CONFIG = {
   // The watch app reads usage from this topic. Do not subscribe to it on the
   // phone: it gets a silent status message whenever usage changes.
   statusTopic: null, // defaults to `${ntfyTopic}-status`
-  statusHeartbeatMinutes: 30,
+  statusHeartbeatMinutes: 60,
   // Allow/Deny answers from the watch arrive on this topic. Anyone who knows
   // it (or the status topic, which carries the one-time codes) can answer
   // permission requests, so keep both private.
   replyTopic: null, // defaults to `${ntfyTopic}-reply`
+  // Your own relay Worker (relay/ in this repo). When set, status and the
+  // watch's answers go through it instead of ntfy, and ntfy carries only
+  // alerts. Both must match the watch app's Secrets.xcconfig.
+  relayUrl: null,
+  relayToken: null,
   approvalsEnabled: true,
   pollSeconds: 30,
   thresholds: [50, 75, 90, 100],
@@ -204,28 +209,104 @@ async function push(config, { title, message, priority = 3, tags = [], actions }
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ topic: config.ntfyTopic, title, message, priority, tags, actions }),
   });
-  if (!res.ok) throw new Error(`ntfy returned HTTP ${res.status}`);
+  // A failed alert must not stop the poll, or the status (and Allow
+  // buttons) stop updating whenever ntfy is down or over quota.
+  if (!res.ok) return log(`Push failed (ntfy HTTP ${res.status}): ${title}`);
   log(`Pushed: ${title} — ${message}`);
 }
 
 // Publishes status.json to the status topic for the watch app. ntfy.sh limits
 // anonymous publishing per day, so only publish when the numbers change or
 // when the heartbeat is due (the watch shows how old the data is).
+//
+// ntfy.sh allows 250 messages a day per IP address, shared by the Mac, the
+// watch (answers) and alerts. Status updates are throttled to stay well
+// under it:
+// - a change in the waiting permission requests publishes at once (at most
+//   every 15 s), so Allow buttons appear and clear quickly;
+// - any other change (usage %, session names) waits until 10 minutes after
+//   the last publish;
+// - with no change, a heartbeat every `statusHeartbeatMinutes`.
+// After a 429 (quota reached) it backs off for 30 minutes.
+//
+// With a relay there is no quota to save: publish on any change, and every
+// 10 minutes otherwise so the watch can tell the Mac is still up.
 async function publishStatus(config, state, status) {
+  const now = Date.now();
+  if (!config.relayUrl && now < (state.statusBackoffUntil ?? 0)) return;
+
   const { updated_at, ...rest } = status;
   const signature = JSON.stringify(rest);
-  const heartbeatMs = config.statusHeartbeatMinutes * 60 * 1000;
-  const due = Date.now() - (state.statusPublishedAt ?? 0) >= heartbeatMs;
-  if (signature === state.statusSignature && !due) return;
+  const approvalsSignature = JSON.stringify((status.approvals ?? []).map((a) => a.id));
+  const since = now - (state.statusPublishedAt ?? 0);
+  const approvalsChanged = approvalsSignature !== state.statusApprovalsSignature;
+  const otherChanged = signature !== state.statusSignature;
 
+  const publish = config.relayUrl
+    ? otherChanged || since >= 10 * 60 * 1000
+    : (approvalsChanged && since >= 15 * 1000)
+      || (otherChanged && since >= 10 * 60 * 1000)
+      || since >= config.statusHeartbeatMinutes * 60 * 1000;
+  if (!publish) return;
+
+  if (config.relayUrl) {
+    await relayFetch(config, '/status', { method: 'PUT', body: JSON.stringify(status) });
+  } else {
+    await publishToNtfy(config, state, status, now);
+  }
+  state.statusSignature = signature;
+  state.statusApprovalsSignature = approvalsSignature;
+  state.statusPublishedAt = now;
+  delete state.statusBackoffUntil;
+}
+
+async function publishToNtfy(config, state, status, now) {
   const res = await fetch(config.ntfyServer, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ topic: config.statusTopic, message: JSON.stringify(status), priority: 1 }),
   });
+  if (res.status === 429) {
+    state.statusBackoffUntil = now + 30 * 60 * 1000;
+    throw new Error('ntfy daily message quota reached; pausing status updates for 30 minutes');
+  }
   if (!res.ok) throw new Error(`ntfy status publish returned HTTP ${res.status}`);
-  state.statusSignature = signature;
-  state.statusPublishedAt = Date.now();
+}
+
+// ---------- Relay ----------
+
+async function relayFetch(config, apiPath, init = {}) {
+  const res = await fetch(`${config.relayUrl}${apiPath}`, {
+    ...init,
+    headers: { Authorization: `Bearer ${config.relayToken}`, 'Content-Type': 'application/json' },
+    signal: AbortSignal.timeout(20000),
+  });
+  if (!res.ok) throw new Error(`relay ${apiPath} returned HTTP ${res.status}`);
+  return res.status === 204 ? null : res.json();
+}
+
+// Checks the relay for answers from the watch every 3 seconds. The first
+// call only learns the current seq, so old answers do not replay after a
+// restart.
+async function pollRelayReplies(config) {
+  let after = null;
+  for (;;) {
+    try {
+      const query = after === null ? '' : `?after=${after}`;
+      const { seq, replies } = await relayFetch(config, `/replies${query}`);
+      for (const reply of replies) {
+        try {
+          await resolveApproval(config, reply);
+        } catch (err) {
+          log(`Answer failed: ${err.message}`);
+        }
+      }
+      after = seq;
+    } catch (err) {
+      log(`Relay replies check failed: ${err.message}`);
+    }
+    await new Promise((r) => setTimeout(r, 3000));
+  }
 }
 
 // ---------- Polling ----------
@@ -463,7 +544,7 @@ async function checkApprovals(config, state, notify, needsInput) {
         const [approval] = fresh;
         const answer = (decision) => ({
           action: 'http',
-          label: decision === 'allow' ? 'Allow once' : 'Deny',
+          label: { allow: 'Allow once', allow_conversation: 'Allow for chat', deny: 'Deny' }[decision],
           url: `${config.ntfyServer}/${config.replyTopic}`,
           method: 'POST',
           body: JSON.stringify({ id: approval.id, nonce: approval.nonce, decision }),
@@ -474,7 +555,8 @@ async function checkApprovals(config, state, notify, needsInput) {
           message: [where, approval.detail].filter(Boolean).join('\n'),
           priority: 4,
           tags: ['lock'],
-          actions: [answer('allow'), answer('deny')],
+          // Allow once stays first: a double tap on the watch presses it.
+          actions: [answer('allow'), answer('allow_conversation'), answer('deny')],
         });
       } else {
         await push(config, {
@@ -502,21 +584,28 @@ async function resolveApproval(config, reply) {
   if (Date.now() - new Date(approval.created_at).getTime() > APPROVAL_TTL_MS) {
     return log(`Rejected answer for ${approval.id}: older than 12 hours`);
   }
-  if (reply.decision !== 'allow' && reply.decision !== 'deny') {
+  // allow: this request only. allow_conversation: grant the same tool for the
+  // rest of this conversation, as "Allow for this conversation" does in the
+  // Claude Science UI. deny: refuse this request.
+  const RESPONSES = {
+    allow: { action: 'allow_once', log: 'Allowed once' },
+    allow_conversation: { action: 'allow', scope: 'conversation', log: 'Allowed for conversation' },
+    deny: { action: 'deny', log: 'Denied' },
+  };
+  const chosen = RESPONSES[reply.decision];
+  if (!chosen) {
     return log(`Rejected answer for ${approval.id}: unknown decision ${reply.decision}`);
   }
   usedNonces.add(reply.nonce);
 
-  const response = {
-    requestId: approval.id,
-    action: reply.decision === 'allow' ? 'allow_once' : 'deny',
-  };
+  const response = { requestId: approval.id, action: chosen.action };
+  if (chosen.scope) response.scope = chosen.scope;
   if (approval.tool_id) response.tool_id = approval.tool_id;
   const result = await daemonPost(config, `/api/frames/${encodeURIComponent(approval.frame_id)}/resolve-input`, {
     responses: [response],
   });
   approvals.delete(approval.id);
-  log(`${reply.decision === 'allow' ? 'Allowed' : 'Denied'} ${approval.title} (${approval.id}): ${result?.status ?? 'ok'}`);
+  log(`${chosen.log} ${approval.title} (${approval.id}): ${result?.status ?? 'ok'}`);
 }
 
 // Streams the reply topic and applies each answer. The first connection
@@ -635,8 +724,13 @@ async function main() {
     return;
   }
 
-  log(`Polling every ${config.pollSeconds}s; ntfy topic ${config.ntfyTopic}`);
-  if (config.approvalsEnabled) listenForReplies(config);
+  log(`Polling every ${config.pollSeconds}s; ntfy topic ${config.ntfyTopic}`
+    + (config.relayUrl ? `; relay ${config.relayUrl}` : ''));
+  if (config.approvalsEnabled) {
+    // The buttons on ntfy alerts still answer through the reply topic.
+    listenForReplies(config);
+    if (config.relayUrl) pollRelayReplies(config);
+  }
   for (;;) {
     try {
       await poll(config);

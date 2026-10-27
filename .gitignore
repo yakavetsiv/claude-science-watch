@@ -9,3 +9,6 @@ build/
 
 # Watch app secrets
 watch/Config/Secrets.xcconfig
+
+# Wrangler
+.wrangler/

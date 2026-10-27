@@ -9,8 +9,9 @@ enum StatusFeed {
 
         var errorDescription: String? {
             switch self {
-            case .notConfigured: "No status topic set. Add CSW_STATUS_TOPIC to Secrets.xcconfig."
+            case .notConfigured: "No status feed set. Add the relay or CSW_STATUS_TOPIC to Secrets.xcconfig."
             case .noMessage: "No status yet. Is the Mac helper running?"
+            case .http(429): "ntfy's daily limit is used up. Answer in Claude Science until it resets."
             case .http(let code): "ntfy returned HTTP \(code)."
             }
         }
@@ -28,7 +29,41 @@ enum StatusFeed {
         (Bundle.main.object(forInfoDictionaryKey: "CSWNtfyServer") as? String) ?? "https://ntfy.sh"
     }
 
+    /// The relay Worker, when CSW_RELAY_URL and CSW_RELAY_TOKEN are set.
+    /// It replaces ntfy for status and answers.
+    private static var relay: (url: URL, token: String)? {
+        func value(_ key: String) -> String? {
+            guard let value = Bundle.main.object(forInfoDictionaryKey: key) as? String,
+                  !value.isEmpty, !value.contains("$(") else { return nil }
+            return value
+        }
+        guard let url = value("CSWRelayURL").flatMap(URL.init(string:)),
+              let token = value("CSWRelayToken") else { return nil }
+        return (url, token)
+    }
+
+    private static func relayRequest(_ path: String, method: String = "GET") -> URLRequest? {
+        guard let relay else { return nil }
+        var request = URLRequest(url: relay.url.appending(path: path))
+        request.httpMethod = method
+        request.timeoutInterval = 20
+        request.setValue("Bearer \(relay.token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        return request
+    }
+
     static func fetchLatest() async throws -> UsageStatus {
+        if let request = relayRequest("status") {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            if let http = response as? HTTPURLResponse {
+                if http.statusCode == 404 { throw FeedError.noMessage }
+                if http.statusCode != 200 { throw FeedError.http(http.statusCode) }
+            }
+            let status = try decoder.decode(UsageStatus.self, from: data)
+            UserDefaults.standard.set(data, forKey: cacheKey)
+            return status
+        }
+
         guard let topic,
               let url = URL(string: "\(server)/\(topic)/json?poll=1&since=latest") else {
             throw FeedError.notConfigured
@@ -57,16 +92,27 @@ enum StatusFeed {
         return status
     }
 
-    enum Decision: String { case allow, deny }
+    /// allow: this request only. allowConversation: this tool for the rest of
+    /// the conversation. deny: refuse it.
+    enum Decision: String {
+        case allow
+        case allowConversation = "allow_conversation"
+        case deny
+    }
 
     /// Posts an Allow/Deny answer to the helper's reply topic. The helper
     /// checks the one-time code and forwards it to Claude Science.
     static func answer(_ approval: Approval, _ decision: Decision, replyTopic: String?) async throws {
-        let topic = replyTopic ?? topic.map { $0.replacingOccurrences(of: "-status", with: "-reply") }
-        guard let topic, let url = URL(string: "\(server)/\(topic)") else { throw FeedError.notConfigured }
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.timeoutInterval = 20
+        var request: URLRequest
+        if let relayRequest = relayRequest("reply", method: "POST") {
+            request = relayRequest
+        } else {
+            let topic = replyTopic ?? topic.map { $0.replacingOccurrences(of: "-status", with: "-reply") }
+            guard let topic, let url = URL(string: "\(server)/\(topic)") else { throw FeedError.notConfigured }
+            request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.timeoutInterval = 20
+        }
         request.httpBody = try JSONSerialization.data(withJSONObject: [
             "id": approval.id, "nonce": approval.nonce, "decision": decision.rawValue,
         ])

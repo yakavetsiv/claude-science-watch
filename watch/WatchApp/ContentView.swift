@@ -11,6 +11,7 @@ struct ContentView: View {
     /// status drops them.
     @State private var answered: Set<String> = []
     @State private var sending: String?
+    @State private var answerError: String?
     @AppStorage(ExpiryReminder.enabledKey) private var remindersEnabled = true
     @Environment(\.scenePhase) private var scenePhase
 
@@ -20,6 +21,13 @@ struct ContentView: View {
                 if let status {
                     let current = status.asOf(.now)
                     let waiting = (status.approvals ?? []).filter { !answered.contains($0.id) }
+                    if let answerError {
+                        // Shown above the requests, where the tap happened.
+                        Label(answerError, systemImage: "exclamationmark.triangle.fill")
+                            .font(.footnote)
+                            .foregroundStyle(.orange)
+                            .listRowBackground(Color.clear)
+                    }
                     ForEach(waiting) { approval in
                         ApprovalSection(approval: approval, sending: sending == approval.id,
                                         isPrimary: approval.id == waiting.first?.id,
@@ -113,12 +121,12 @@ struct ContentView: View {
         do {
             try await StatusFeed.answer(approval, decision, replyTopic: replyTopic)
             answered.insert(approval.id)
-            error = nil
+            answerError = nil
             // The helper applies the answer and republishes status within a poll.
             try? await Task.sleep(for: .seconds(35))
             await refresh()
         } catch {
-            self.error = "Answer not sent: \(error.localizedDescription)"
+            answerError = "Answer not sent. \(error.localizedDescription)"
             WKInterfaceDevice.current().play(.failure)
         }
     }
@@ -212,8 +220,10 @@ struct ApprovalSection: View {
                     }
                     .frame(maxWidth: .infinity, minHeight: 44)
                 } else {
-                    answerButton("Allow", icon: "checkmark", decision: .allow, tint: .green)
+                    answerButton("Allow once", icon: "checkmark", decision: .allow, tint: .green)
                         .handGestureShortcut(.primaryAction, isEnabled: isPrimary)
+                    answerButton("Allow for chat", icon: "checkmark.circle", decision: .allowConversation,
+                                 tint: .green)
                     answerButton("Deny", icon: "xmark", decision: .deny, tint: .red)
                 }
             }
@@ -225,7 +235,7 @@ struct ApprovalSection: View {
             }
         } footer: {
             if isPrimary && !sending {
-                Label("Double tap to allow", systemImage: "hand.tap")
+                Label("Double tap to allow once", systemImage: "hand.tap")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
@@ -263,8 +273,9 @@ struct ApprovalSection: View {
         }
     }
 
-    /// Allow is the filled, primary button. Deny is a quieter grey button
-    /// with red text, so the two are easy to tell apart at a glance.
+    /// Allow once is the filled, primary button. Allow for chat and Deny are
+    /// quieter grey buttons with green or red text, so they are easy to tell
+    /// apart at a glance.
     private func answerButton(_ title: String, icon: String, decision: StatusFeed.Decision,
                               tint: Color) -> some View {
         Button { onAnswer(decision) } label: {

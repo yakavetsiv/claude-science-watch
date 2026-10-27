@@ -11,5 +11,9 @@
 	<string>$(CSW_STATUS_TOPIC)</string>
 	<key>CSWNtfyServer</key>
 	<string>$(CSW_NTFY_SERVER)</string>
+	<key>CSWRelayURL</key>
+	<string>$(CSW_RELAY_URL)</string>
+	<key>CSWRelayToken</key>
+	<string>$(CSW_RELAY_TOKEN)</string>
 </dict>
 </plist>
