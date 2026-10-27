@@ -52,7 +52,26 @@ enum StatusFeed {
         return request
     }
 
+    /// With `maxAge`, returns the cached status instead of going to the
+    /// network when it was fetched that recently. The complications use it:
+    /// four widget kinds refresh together and would otherwise fetch four times.
+    static func fetchLatest(maxAge: TimeInterval) async throws -> UsageStatus {
+        if let at = UserDefaults.standard.object(forKey: cacheDateKey) as? Date,
+           Date.now.timeIntervalSince(at) < maxAge, let cached {
+            return cached
+        }
+        return try await fetchLatest()
+    }
+
     static func fetchLatest() async throws -> UsageStatus {
+        let status = try await fetchFromNetwork()
+        UserDefaults.standard.set(Date.now, forKey: cacheDateKey)
+        return status
+    }
+
+    private static let cacheDateKey = "lastStatusFetchedAt"
+
+    private static func fetchFromNetwork() async throws -> UsageStatus {
         if let request = relayRequest("status") {
             let (data, response) = try await URLSession.shared.data(for: request)
             if let http = response as? HTTPURLResponse {

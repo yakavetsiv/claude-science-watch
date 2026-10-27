@@ -99,12 +99,15 @@ struct ContentView: View {
             remindersSet = await ExpiryReminder.schedule()
             await refresh()
         }
-        // While the app is on screen (including wrist-down Always On),
-        // check every 10 seconds so new requests buzz almost at once.
+        // Poll only while the wrist is raised and the app is active: wrist-down
+        // (Always On) stays on the last status until the next raise. Every
+        // 10 s while a request waits, so its answer clears quickly; otherwise
+        // 30 s, as often as the helper itself checks Claude Science.
         .task(id: scenePhase) {
-            guard scenePhase != .background else { return }
+            guard scenePhase == .active else { return }
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(10))
+                let waiting = !(status?.approvals ?? []).isEmpty || sending != nil
+                try? await Task.sleep(for: .seconds(waiting ? 10 : 30))
                 if !Task.isCancelled { await refresh() }
             }
         }
@@ -171,10 +174,14 @@ struct ContentView: View {
         do {
             let latest = try await StatusFeed.fetchLatest()
             if latest != status {
-                playHaptics(from: status, to: latest)
+                // Reload complications only for what they show, not for a
+                // new request count or publish time.
+                if !latest.showsSame(as: status) {
+                    playHaptics(from: status, to: latest)
+                    WidgetCenter.shared.reloadAllTimelines()
+                }
                 answered.formIntersection((latest.approvals ?? []).map(\.id))
                 status = latest
-                WidgetCenter.shared.reloadAllTimelines()
             }
             error = nil
         } catch {
@@ -416,6 +423,7 @@ struct SessionRow: View {
     let session: SessionName
     let icon: String
     let tint: Color
+    @Environment(\.isLuminanceReduced) private var isLuminanceReduced
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
@@ -423,7 +431,8 @@ struct SessionRow: View {
             Image(systemName: icon)
                 .font(.caption2)
                 .foregroundStyle(tint)
-                .symbolEffect(.pulse, isActive: icon.hasPrefix("gearshape"))
+                // No animation in Always On, where it would keep redrawing.
+                .symbolEffect(.pulse, isActive: icon.hasPrefix("gearshape") && !isLuminanceReduced)
                 .frame(width: 16)
             VStack(alignment: .leading, spacing: 1) {
                 Text(session.name)

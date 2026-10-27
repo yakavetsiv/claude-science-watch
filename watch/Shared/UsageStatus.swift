@@ -78,6 +78,14 @@ struct UsageStatus: Codable, Hashable {
     var fiveHour: UsageLimit? { limits.first { $0.kind == "session" } }
     var weekly: UsageLimit? { limits.first { $0.kind == "weekly_all" } }
 
+    /// Same limits, sessions and requests. Ignores the relay's request count,
+    /// which changes on every read, and the publish time, so polling does not
+    /// reload complications (and buzz the radio) when nothing they show changed.
+    func showsSame(as other: UsageStatus?) -> Bool {
+        guard let other else { return false }
+        return limits == other.limits && sessions == other.sessions && approvals == other.approvals
+    }
+
     func asOf(_ date: Date) -> UsageStatus {
         UsageStatus(updatedAt: updatedAt, limits: limits.map { $0.asOf(date) }, sessions: sessions,
                     approvals: approvals, replyTopic: replyTopic, relay: relay)

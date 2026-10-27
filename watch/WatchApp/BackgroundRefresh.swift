@@ -20,7 +20,7 @@ enum BackgroundRefresh {
         defer { schedule() }
         let before = StatusFeed.cached
         guard let latest = try? await StatusFeed.fetchLatest() else { return }
-        if latest != before {
+        if !latest.showsSame(as: before) {
             WidgetCenter.shared.reloadAllTimelines()
         }
     }

@@ -19,7 +19,7 @@ struct LimitsProvider: TimelineProvider {
             return
         }
         Task {
-            let status = (try? await StatusFeed.fetchLatest()) ?? StatusFeed.cached
+            let status = (try? await StatusFeed.fetchLatest(maxAge: 60)) ?? StatusFeed.cached
             completion(LimitsEntry(date: .now, status: status))
         }
     }
@@ -27,7 +27,7 @@ struct LimitsProvider: TimelineProvider {
     func getTimeline(in context: Context, completion: @escaping (Timeline<LimitsEntry>) -> Void) {
         Task {
             let now = Date.now
-            let status = (try? await StatusFeed.fetchLatest()) ?? StatusFeed.cached
+            let status = (try? await StatusFeed.fetchLatest(maxAge: 60)) ?? StatusFeed.cached
             // One entry now, plus one at each reset so the gauge drops to 0 %
             // on time even if the next fetch is late.
             let dates = [now] + (status?.upcomingResets(after: now) ?? [])
