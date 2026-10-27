@@ -33,7 +33,12 @@ const DEFAULT_CONFIG = {
   // phone: it gets a silent status message whenever usage changes.
   statusTopic: null, // defaults to `${ntfyTopic}-status`
   statusHeartbeatMinutes: 30,
-  pollSeconds: 120,
+  // Allow/Deny answers from the watch arrive on this topic. Anyone who knows
+  // it (or the status topic, which carries the one-time codes) can answer
+  // permission requests, so keep both private.
+  replyTopic: null, // defaults to `${ntfyTopic}-reply`
+  approvalsEnabled: true,
+  pollSeconds: 30,
   thresholds: [50, 75, 90, 100],
   notifyCompleted: true,
   notifyNeedsInput: true,
@@ -77,6 +82,7 @@ function loadConfig() {
     log(`Created ${CONFIG_PATH} with new ntfy topic ${config.ntfyTopic}`);
   }
   config.statusTopic ??= `${config.ntfyTopic}-status`;
+  config.replyTopic ??= `${config.ntfyTopic}-reply`;
   return config;
 }
 
@@ -153,6 +159,34 @@ async function daemonGet(config, apiPath) {
   throw new Error(`${apiPath} still unauthorized after signing in again`);
 }
 
+// POSTs need the CSRF cookie echoed in the x-operon-csrf header, as the
+// web UI does.
+async function daemonPost(config, apiPath, body) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (!cookies.operon_auth) await signIn(config);
+    const res = await fetch(`${config.daemonUrl}${apiPath}`, {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+        Origin: config.daemonUrl,
+        Cookie: cookieHeader(),
+        'x-operon-csrf': cookies.operon_csrf ?? '',
+      },
+      body: JSON.stringify(body),
+    });
+    storeCookies(res);
+    if (res.status === 401) {
+      cookies = {};
+      continue;
+    }
+    const text = await res.text();
+    if (!res.ok) throw new Error(`${apiPath} returned HTTP ${res.status}: ${text.slice(0, 200)}`);
+    return text ? JSON.parse(text) : null;
+  }
+  throw new Error(`${apiPath} still unauthorized after signing in again`);
+}
+
 async function daemonRunning(config) {
   try {
     await fetch(`${config.daemonUrl}/`, { method: 'HEAD', signal: AbortSignal.timeout(3000) });
@@ -164,11 +198,11 @@ async function daemonRunning(config) {
 
 // ---------- ntfy ----------
 
-async function push(config, { title, message, priority = 3, tags = [] }) {
+async function push(config, { title, message, priority = 3, tags = [], actions }) {
   const res = await fetch(config.ntfyServer, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ topic: config.ntfyTopic, title, message, priority, tags }),
+    body: JSON.stringify({ topic: config.ntfyTopic, title, message, priority, tags, actions }),
   });
   if (!res.ok) throw new Error(`ntfy returned HTTP ${res.status}`);
   log(`Pushed: ${title} — ${message}`);
@@ -273,42 +307,226 @@ async function checkSessions(config, state, notify) {
   const seenCompleted = new Set(state.seenCompleted ?? []);
   const prevNeedsInput = new Set(state.needsInput ?? []);
   const nowNeedsInput = new Set();
+  const prevProcessing = state.processing ?? {};
+  const nowProcessing = {};
+  // Bench id -> time we last sent "finished", so a session that stops
+  // processing and is also marked completed only notifies once.
+  const finishedAt = state.finishedAt ?? {};
+  const finished = async (project, bench) => {
+    const last = finishedAt[bench.id] ?? 0;
+    finishedAt[bench.id] = Date.now();
+    if (Date.now() - last < 10 * 60 * 1000 || !notify || !config.notifyCompleted) return;
+    await push(config, {
+      title: 'Claude Science session finished',
+      message: sessionLine(config, project, bench),
+      priority: 3,
+      tags: ['white_check_mark'],
+    });
+  };
 
+  for (const project of dash.projects ?? []) {
+    for (const bench of project.processing_benches ?? []) {
+      if (bench?.id) nowProcessing[bench.id] = { project: project.name, name: bench.name ?? null };
+    }
+  }
+
+  // Sessions waiting on the user. The "needs your input" push is sent by
+  // poll() after checkApprovals, and only when the wait is not a permission
+  // request (those get their own Allow/Deny push).
+  const needsInput = [];
   for (const project of dash.projects ?? []) {
     for (const bench of project.needs_input_benches ?? []) {
       if (!bench?.id) continue;
       nowNeedsInput.add(bench.id);
-      if (!prevNeedsInput.has(bench.id) && notify && config.notifyNeedsInput) {
-        await push(config, {
-          title: 'Claude Science needs your input',
-          message: sessionLine(config, project, bench),
-          priority: 4,
-          tags: ['raised_hand'],
-        });
-      }
+      needsInput.push({
+        id: bench.id,
+        project: project.name,
+        name: bench.name || bench.task_summary || 'Session',
+        isNew: !prevNeedsInput.has(bench.id),
+        line: sessionLine(config, project, bench),
+      });
     }
     for (const bench of project.recently_completed ?? []) {
       if (!bench?.id) continue;
       const key = `${bench.id}@${bench.completed_at ?? ''}`;
       if (seenCompleted.has(key)) continue;
       seenCompleted.add(key);
-      if (notify && config.notifyCompleted) {
+      await finished(project, bench);
+    }
+  }
+
+  // A session that was running and has stopped without asking for input
+  // has finished its turn. Most sessions go idle rather than "completed",
+  // so this is the main source of finished alerts.
+  for (const [id, info] of Object.entries(prevProcessing)) {
+    if (nowProcessing[id] || nowNeedsInput.has(id)) continue;
+    await finished({ name: info.project }, { id, name: info.name });
+  }
+
+  const cutoff = Date.now() - 24 * 3600 * 1000;
+  state.finishedAt = Object.fromEntries(Object.entries(finishedAt).filter(([, t]) => t > cutoff));
+  state.processing = nowProcessing;
+  state.needsInput = [...nowNeedsInput];
+  state.seenCompleted = [...seenCompleted].slice(-500);
+  return {
+    counts: {
+      processing: dash.total_processing ?? 0,
+      needsInput: dash.total_needs_input ?? 0,
+    },
+    needsInput,
+  };
+}
+
+// ---------- Approvals ----------
+
+// Pending permission requests by requestId, rebuilt on every poll. The reply
+// listener reads it, so it lives in memory; nonces persist in state.json so a
+// helper restart does not invalidate buttons already on the watch.
+let approvals = new Map();
+const usedNonces = new Set();
+const APPROVAL_TTL_MS = 60 * 60 * 1000;
+
+function describeRequest(req) {
+  if (req.kind === 'local_exec') {
+    const firstLine = String(req.code ?? '').split('\n').find((l) => l.trim()) ?? '';
+    return { title: `Run ${req.tool ?? 'code'}`, detail: firstLine.slice(0, 120) };
+  }
+  const target = req.host ?? req.domain ?? req.url ?? req.path ?? req.command ?? req.tool ?? '';
+  const kind = String(req.kind ?? 'request').replace(/_/g, ' ');
+  return { title: `Allow ${kind}`, detail: String(target).slice(0, 120) };
+}
+
+// Pending requests that are questions for the user, not permissions. They
+// need typed answers, which Allow/Deny cannot give, so they only get the
+// plain "needs your input" alert.
+const QUESTION_KINDS = new Set(['ask', 'question', 'plan_approval']);
+
+/// Pending permission requests in a frame and any children it includes.
+function collectPending(frame, out = []) {
+  for (const req of frame?.output_data?.pending_input_requests ?? []) {
+    if (!req || typeof req !== 'object' || !req.requestId) continue;
+    if (QUESTION_KINDS.has(req.kind) || req.questions) continue;
+    out.push(req);
+  }
+  for (const child of frame?.children ?? []) collectPending(child, out);
+  return out;
+}
+
+async function checkApprovals(config, state, notify, needsInput) {
+  const known = state.approvals ?? {};
+  const next = new Map();
+
+  for (const { id, project, name } of needsInput) {
+    let frame;
+    try {
+      frame = await daemonGet(config, `/api/frames/${encodeURIComponent(id)}`);
+    } catch (err) {
+      log(`Could not read session ${id}: ${err.message}`);
+      continue;
+    }
+    for (const req of collectPending(frame)) {
+      const prev = known[req.requestId];
+      const { title, detail } = describeRequest(req);
+      const approval = {
+        id: req.requestId,
+        nonce: prev?.nonce ?? crypto.randomBytes(16).toString('hex'),
+        frame_id: req.frameId ?? id,
+        tool_id: req.tool_id ?? null,
+        kind: req.kind ?? null,
+        title,
+        detail: config.includeNames ? detail : '',
+        project: config.includeNames ? project : null,
+        session: config.includeNames ? name : null,
+        created_at: req.createdAt ?? new Date().toISOString(),
+      };
+      next.set(approval.id, approval);
+
+      if (!prev && notify) {
+        const answer = (decision) => ({
+          action: 'http',
+          label: decision === 'allow' ? 'Allow once' : 'Deny',
+          url: `${config.ntfyServer}/${config.replyTopic}`,
+          method: 'POST',
+          body: JSON.stringify({ id: approval.id, nonce: approval.nonce, decision }),
+          clear: true,
+        });
         await push(config, {
-          title: 'Claude Science session finished',
-          message: sessionLine(config, project, bench),
-          priority: 3,
-          tags: ['white_check_mark'],
+          title: `Claude Science: ${title}?`,
+          message: [config.includeNames ? `${project}: ${name}` : 'A session', approval.detail]
+            .filter(Boolean).join('\n'),
+          priority: 4,
+          tags: ['lock'],
+          actions: [answer('allow'), answer('deny')],
         });
       }
     }
   }
 
-  state.needsInput = [...nowNeedsInput];
-  state.seenCompleted = [...seenCompleted].slice(-500);
-  return {
-    processing: dash.total_processing ?? 0,
-    needsInput: dash.total_needs_input ?? 0,
+  approvals = next;
+  state.approvals = Object.fromEntries(next);
+  return [...next.values()];
+}
+
+async function resolveApproval(config, reply) {
+  const approval = approvals.get(reply?.id);
+  if (!approval) return log(`Ignored answer for unknown or finished request ${reply?.id}`);
+  if (reply.nonce !== approval.nonce || usedNonces.has(reply.nonce)) {
+    return log(`Rejected answer for ${approval.id}: bad or reused code`);
+  }
+  if (Date.now() - new Date(approval.created_at).getTime() > APPROVAL_TTL_MS) {
+    return log(`Rejected answer for ${approval.id}: older than 1 hour`);
+  }
+  if (reply.decision !== 'allow' && reply.decision !== 'deny') {
+    return log(`Rejected answer for ${approval.id}: unknown decision ${reply.decision}`);
+  }
+  usedNonces.add(reply.nonce);
+
+  const response = {
+    requestId: approval.id,
+    action: reply.decision === 'allow' ? 'allow_once' : 'deny',
   };
+  if (approval.tool_id) response.tool_id = approval.tool_id;
+  const result = await daemonPost(config, `/api/frames/${encodeURIComponent(approval.frame_id)}/resolve-input`, {
+    responses: [response],
+  });
+  approvals.delete(approval.id);
+  log(`${reply.decision === 'allow' ? 'Allowed' : 'Denied'} ${approval.title} (${approval.id}): ${result?.status ?? 'ok'}`);
+}
+
+// Streams the reply topic and applies each answer. The first connection
+// reads only new answers (an old one must not replay after a restart);
+// reconnects pass `since` so answers sent while disconnected are not lost.
+async function listenForReplies(config) {
+  let since = null;
+  for (;;) {
+    try {
+      const query = since ? `?since=${since}` : '';
+      const res = await fetch(`${config.ntfyServer}/${config.replyTopic}/json${query}`);
+      if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
+      const decoder = new TextDecoder();
+      let buffer = '';
+      for await (const chunk of res.body) {
+        buffer += decoder.decode(chunk, { stream: true });
+        let nl;
+        while ((nl = buffer.indexOf('\n')) >= 0) {
+          const line = buffer.slice(0, nl).trim();
+          buffer = buffer.slice(nl + 1);
+          if (!line) continue;
+          const event = JSON.parse(line);
+          if (event.id) since = event.id;
+          if (event.event !== 'message') continue;
+          try {
+            await resolveApproval(config, JSON.parse(event.message));
+          } catch (err) {
+            log(`Answer failed: ${err.message}`);
+          }
+        }
+      }
+    } catch (err) {
+      log(`Reply stream dropped: ${err.message}`);
+    }
+    await new Promise((r) => setTimeout(r, 5000));
+  }
 }
 
 async function poll(config, { notify = true } = {}) {
@@ -323,6 +541,21 @@ async function poll(config, { notify = true } = {}) {
 
   const usage = await checkUsage(config, state, doNotify);
   const sessions = await checkSessions(config, state, doNotify);
+  const pending = config.approvalsEnabled
+    ? await checkApprovals(config, state, doNotify, sessions.needsInput)
+    : [];
+
+  if (doNotify && config.notifyNeedsInput) {
+    for (const wait of sessions.needsInput) {
+      if (!wait.isNew || pending.some((a) => a.frame_id === wait.id || a.session === wait.name)) continue;
+      await push(config, {
+        title: 'Claude Science needs your input',
+        message: wait.line,
+        priority: 4,
+        tags: ['raised_hand'],
+      });
+    }
+  }
 
   const status = {
     updated_at: new Date().toISOString(),
@@ -335,7 +568,13 @@ async function poll(config, { notify = true } = {}) {
       resets_at: l.resets_at ? new Date(l.resets_at).toISOString() : null,
       is_active: l.is_active,
     })),
-    sessions,
+    sessions: sessions.counts,
+    // What the watch app lists under Approvals. `nonce` is the one-time code
+    // the watch sends back with its answer.
+    approvals: pending.map(({ id, nonce, title, detail, project, session, created_at }) => ({
+      id, nonce, title, detail, project, session, created_at,
+    })),
+    reply_topic: config.replyTopic,
   };
   writeJson(STATUS_PATH, status);
 
@@ -371,6 +610,7 @@ async function main() {
   }
 
   log(`Polling every ${config.pollSeconds}s; ntfy topic ${config.ntfyTopic}`);
+  if (config.approvalsEnabled) listenForReplies(config);
   for (;;) {
     try {
       await poll(config);

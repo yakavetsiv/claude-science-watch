@@ -17,6 +17,18 @@ Shows your Claude Science plan limits and session activity on your phone and App
 
 If the daemon is not running, the helper skips that poll.
 
+"Session finished" fires when a session that was running stops without asking for input (most sessions go idle rather than "completed"), or when one is marked completed.
+
+### Approving permissions from the watch
+
+When a session asks for permission (for example to run Python or bash), the helper:
+
+1. Pushes "Claude Science: Run python?" with the project, session and first line of code.
+2. Adds the request, with a random one-time code, to the status feed. The watch app shows it under **Needs permission** with **Allow** and **Deny**.
+3. Listens on `<ntfyTopic>-reply`. When the watch posts an answer, the helper checks the code (single use, expires after 1 hour) and sends `allow_once` or `deny` to `/api/frames/<id>/resolve-input`.
+
+Allow only applies to that one request. Questions that need a typed answer (`ask`) get the plain "needs your input" push instead. Anyone who knows the status or reply topic can answer requests, so keep both private. Set `approvalsEnabled` to `false` to turn this off.
+
 Do not subscribe to the `-status` topic on your phone. It is a data feed for the watch, not alerts.
 
 ## Watch app
@@ -78,13 +90,15 @@ node helper/csw.js --once     # one poll with notifications
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `pollSeconds` | `120` | Time between polls |
+| `pollSeconds` | `30` | Time between polls |
 | `thresholds` | `[50, 75, 90, 100]` | Percent levels that trigger a push |
 | `notifyCompleted` | `true` | Push when a session finishes |
 | `notifyNeedsInput` | `true` | Push when a session needs input |
 | `includeNames` | `true` | Put project and session names in pushes. Set `false` to keep titles off ntfy.sh |
 | `statusTopic` | `<ntfyTopic>-status` | Topic the watch app reads |
 | `statusHeartbeatMinutes` | `30` | Publish status at least this often, even when unchanged |
+| `replyTopic` | `<ntfyTopic>-reply` | Topic the watch posts Allow/Deny answers to |
+| `approvalsEnabled` | `true` | Relay permission requests to the watch |
 | `ntfyServer` | `https://ntfy.sh` | Use a self-hosted ntfy server here if you prefer |
 
 ## Privacy

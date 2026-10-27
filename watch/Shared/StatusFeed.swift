@@ -57,6 +57,25 @@ enum StatusFeed {
         return status
     }
 
+    enum Decision: String { case allow, deny }
+
+    /// Posts an Allow/Deny answer to the helper's reply topic. The helper
+    /// checks the one-time code and forwards it to Claude Science.
+    static func answer(_ approval: Approval, _ decision: Decision, replyTopic: String?) async throws {
+        let topic = replyTopic ?? topic.map { $0.replacingOccurrences(of: "-status", with: "-reply") }
+        guard let topic, let url = URL(string: "\(server)/\(topic)") else { throw FeedError.notConfigured }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 20
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "id": approval.id, "nonce": approval.nonce, "decision": decision.rawValue,
+        ])
+        let (_, response) = try await URLSession.shared.data(for: request)
+        if let http = response as? HTTPURLResponse, http.statusCode != 200 {
+            throw FeedError.http(http.statusCode)
+        }
+    }
+
     /// Last status fetched by this process (app and widget each keep their own).
     static var cached: UsageStatus? {
         guard let data = UserDefaults.standard.data(forKey: cacheKey) else { return nil }

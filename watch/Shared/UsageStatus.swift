@@ -26,16 +26,31 @@ struct SessionCounts: Codable, Hashable {
     let needsInput: Int
 }
 
+/// A permission request waiting in Claude Science, as relayed by the helper.
+struct Approval: Codable, Hashable, Identifiable {
+    let id: String
+    /// One-time code the helper checks when the answer comes back.
+    let nonce: String
+    let title: String
+    let detail: String?
+    let project: String?
+    let session: String?
+    let createdAt: Date?
+}
+
 struct UsageStatus: Codable, Hashable {
     let updatedAt: Date
     let limits: [UsageLimit]
     let sessions: SessionCounts?
+    var approvals: [Approval]? = nil
+    var replyTopic: String? = nil
 
     var fiveHour: UsageLimit? { limits.first { $0.kind == "session" } }
     var weekly: UsageLimit? { limits.first { $0.kind == "weekly_all" } }
 
     func asOf(_ date: Date) -> UsageStatus {
-        UsageStatus(updatedAt: updatedAt, limits: limits.map { $0.asOf(date) }, sessions: sessions)
+        UsageStatus(updatedAt: updatedAt, limits: limits.map { $0.asOf(date) }, sessions: sessions,
+                    approvals: approvals, replyTopic: replyTopic)
     }
 
     /// Reset times still ahead of `date`, so a widget timeline can show the

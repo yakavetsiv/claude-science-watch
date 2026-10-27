@@ -6,6 +6,10 @@ struct ContentView: View {
     @State private var error: String?
     @State private var loading = false
     @State private var remindersSet = 0
+    /// Approvals answered from this watch, hidden until the helper's next
+    /// status drops them.
+    @State private var answered: Set<String> = []
+    @State private var sending: String?
     @AppStorage(ExpiryReminder.enabledKey) private var remindersEnabled = true
     @Environment(\.scenePhase) private var scenePhase
 
@@ -14,6 +18,16 @@ struct ContentView: View {
             List {
                 if let status {
                     let current = status.asOf(.now)
+                    let waiting = (status.approvals ?? []).filter { !answered.contains($0.id) }
+                    if !waiting.isEmpty {
+                        Section("Needs permission") {
+                            ForEach(waiting) { approval in
+                                ApprovalRow(approval: approval, sending: sending == approval.id) { decision in
+                                    Task { await answer(approval, decision, replyTopic: status.replyTopic) }
+                                }
+                            }
+                        }
+                    }
                     if let limit = current.fiveHour {
                         LimitRow(title: "5-hour", limit: limit)
                     }
@@ -85,6 +99,21 @@ struct ContentView: View {
         Date.now.timeIntervalSince(status.updatedAt) > 45 * 60
     }
 
+    private func answer(_ approval: Approval, _ decision: StatusFeed.Decision, replyTopic: String?) async {
+        sending = approval.id
+        defer { sending = nil }
+        do {
+            try await StatusFeed.answer(approval, decision, replyTopic: replyTopic)
+            answered.insert(approval.id)
+            error = nil
+            // The helper applies the answer and republishes status within a poll.
+            try? await Task.sleep(for: .seconds(35))
+            await refresh()
+        } catch {
+            self.error = "Answer not sent: \(error.localizedDescription)"
+        }
+    }
+
     private func refresh() async {
         loading = true
         defer { loading = false }
@@ -124,6 +153,41 @@ struct LimitRow: View {
             }
         }
         .padding(.vertical, 2)
+    }
+}
+
+struct ApprovalRow: View {
+    let approval: Approval
+    let sending: Bool
+    let onAnswer: (StatusFeed.Decision) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label(approval.title, systemImage: "lock.fill")
+                .font(.headline)
+                .foregroundStyle(.orange)
+            if let session = approval.session {
+                Text([approval.project, session].compactMap { $0 }.joined(separator: ": "))
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            if let detail = approval.detail, !detail.isEmpty {
+                Text(detail)
+                    .font(.system(.caption2, design: .monospaced))
+                    .lineLimit(3)
+            }
+            if sending {
+                ProgressView()
+            } else {
+                HStack {
+                    Button("Allow") { onAnswer(.allow) }
+                        .tint(.green)
+                    Button("Deny", role: .destructive) { onAnswer(.deny) }
+                }
+                .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(.vertical, 4)
     }
 }
 
