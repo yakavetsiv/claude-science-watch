@@ -24,6 +24,15 @@ struct UsageLimit: Codable, Hashable, Identifiable {
 struct SessionCounts: Codable, Hashable {
     let processing: Int
     let needsInput: Int
+    /// Names of sessions working now and sessions waiting on the user. Nil
+    /// when the helper's `includeNames` is off.
+    var running: [SessionName]? = nil
+    var waiting: [SessionName]? = nil
+}
+
+struct SessionName: Codable, Hashable {
+    let project: String?
+    let name: String
 }
 
 /// A permission request waiting in Claude Science, as relayed by the helper.
@@ -84,7 +93,11 @@ struct UsageStatus: Codable, Hashable {
     static let sampleNeedsYou = UsageStatus(
         updatedAt: .now,
         limits: sample.limits,
-        sessions: SessionCounts(processing: 0, needsInput: 1),
+        sessions: SessionCounts(
+            processing: 2, needsInput: 1,
+            running: [SessionName(project: "Organoid_AI_EKGEL", name: "Flow Cytometry Gate Verification Analysis")],
+            waiting: [SessionName(project: "Example project", name: "Test")]
+        ),
         approvals: [Approval(id: "sample", nonce: "", title: "Run python", detail: "import numpy as np",
                              project: "Example project", session: "Test", createdAt: .now)]
     )

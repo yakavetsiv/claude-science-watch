@@ -38,7 +38,7 @@ struct ContentView: View {
                                  limit: limit)
                     }
                     if let sessions = status.sessions {
-                        SessionsRow(sessions: sessions)
+                        SessionsSection(sessions: sessions)
                     }
                     Section {
                         Text("Updated \(status.updatedAt, style: .relative) ago")
@@ -294,19 +294,65 @@ struct PillButtonStyle: ButtonStyle {
     }
 }
 
-struct SessionsRow: View {
+/// Sessions waiting on you, then sessions working now, by name. Falls back
+/// to counts when the helper sends no names (`includeNames` off).
+struct SessionsSection: View {
     let sessions: SessionCounts
 
     var body: some View {
-        HStack {
-            Label("\(sessions.processing) running", systemImage: "gearshape.2")
-            Spacer()
-            if sessions.needsInput > 0 {
-                Label("\(sessions.needsInput)", systemImage: "hand.raised.fill")
-                    .foregroundStyle(.orange)
+        Section("Sessions") {
+            if let running = sessions.running {
+                let waiting = sessions.waiting ?? []
+                ForEach(Array(waiting.enumerated()), id: \.offset) { _, session in
+                    SessionRow(session: session, icon: "hand.raised.fill", tint: .orange)
+                }
+                ForEach(Array(running.enumerated()), id: \.offset) { _, session in
+                    SessionRow(session: session, icon: "gearshape.2.fill", tint: .green)
+                }
+                if running.isEmpty && waiting.isEmpty {
+                    Text("Nothing running")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            } else {
+                HStack {
+                    Label("\(sessions.processing) running", systemImage: "gearshape.2")
+                    Spacer()
+                    if sessions.needsInput > 0 {
+                        Label("\(sessions.needsInput)", systemImage: "hand.raised.fill")
+                            .foregroundStyle(.orange)
+                    }
+                }
+                .font(.footnote)
             }
         }
-        .font(.footnote)
+    }
+}
+
+struct SessionRow: View {
+    let session: SessionName
+    let icon: String
+    let tint: Color
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Image(systemName: icon)
+                .font(.caption2)
+                .foregroundStyle(tint)
+                .symbolEffect(.pulse, isActive: icon.hasPrefix("gearshape"))
+            VStack(alignment: .leading, spacing: 1) {
+                Text(session.name)
+                    .font(.footnote.weight(.semibold))
+                    .lineLimit(2)
+                if let project = session.project {
+                    Text(project)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+        }
+        .padding(.vertical, 2)
     }
 }
 

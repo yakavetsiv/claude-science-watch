@@ -368,10 +368,17 @@ async function checkSessions(config, state, notify) {
   state.processing = nowProcessing;
   state.needsInput = [...nowNeedsInput];
   state.seenCompleted = [...seenCompleted].slice(-500);
+  // Names for the watch app's session list. A session waiting on the user
+  // also shows as processing, so it is listed under waiting only.
+  const named = (list) => (config.includeNames ? list : undefined);
   return {
     counts: {
       processing: dash.total_processing ?? 0,
       needsInput: dash.total_needs_input ?? 0,
+      running: named(Object.entries(nowProcessing)
+        .filter(([id]) => !nowNeedsInput.has(id))
+        .map(([, info]) => ({ project: info.project, name: info.name || 'Session' }))),
+      waiting: named(needsInput.map(({ project, name }) => ({ project, name }))),
     },
     needsInput,
   };
@@ -384,7 +391,7 @@ async function checkSessions(config, state, notify) {
 // helper restart does not invalidate buttons already on the watch.
 let approvals = new Map();
 const usedNonces = new Set();
-const APPROVAL_TTL_MS = 60 * 60 * 1000;
+const APPROVAL_TTL_MS = 12 * 60 * 60 * 1000;
 
 function describeRequest(req) {
   if (req.kind === 'local_exec') {
@@ -415,16 +422,21 @@ function collectPending(frame, out = []) {
 async function checkApprovals(config, state, notify, needsInput) {
   const known = state.approvals ?? {};
   const next = new Map();
+  const fresh = [];
 
   for (const { id, project, name } of needsInput) {
+    // trace-shallow includes sub-agent frames. Sessions that fan out work
+    // (for example parallel figure checks) hold their permission requests
+    // there, not on the session's own frame.
     let frame;
     try {
-      frame = await daemonGet(config, `/api/frames/${encodeURIComponent(id)}`);
+      frame = await daemonGet(config, `/api/frames/${encodeURIComponent(id)}/trace-shallow`);
     } catch (err) {
       log(`Could not read session ${id}: ${err.message}`);
       continue;
     }
     for (const req of collectPending(frame)) {
+      if (next.has(req.requestId)) continue;
       const prev = known[req.requestId];
       const { title, detail } = describeRequest(req);
       const approval = {
@@ -440,8 +452,15 @@ async function checkApprovals(config, state, notify, needsInput) {
         created_at: req.createdAt ?? new Date().toISOString(),
       };
       next.set(approval.id, approval);
+      if (!prev) fresh.push(approval);
+    }
 
-      if (!prev && notify) {
+    // One push per session: a session that fans out can raise several
+    // requests at once, and five alerts in a row is noise.
+    if (fresh.length && notify) {
+      const where = config.includeNames ? `${project}: ${name}` : 'A session';
+      if (fresh.length === 1) {
+        const [approval] = fresh;
         const answer = (decision) => ({
           action: 'http',
           label: decision === 'allow' ? 'Allow once' : 'Deny',
@@ -451,15 +470,22 @@ async function checkApprovals(config, state, notify, needsInput) {
           clear: true,
         });
         await push(config, {
-          title: `Claude Science: ${title}?`,
-          message: [config.includeNames ? `${project}: ${name}` : 'A session', approval.detail]
-            .filter(Boolean).join('\n'),
+          title: `Claude Science: ${approval.title}?`,
+          message: [where, approval.detail].filter(Boolean).join('\n'),
           priority: 4,
           tags: ['lock'],
           actions: [answer('allow'), answer('deny')],
         });
+      } else {
+        await push(config, {
+          title: `Claude Science: ${fresh.length} permission requests`,
+          message: `${where}\nOpen Claude Limits on your watch to answer them.`,
+          priority: 4,
+          tags: ['lock'],
+        });
       }
     }
+    fresh.length = 0;
   }
 
   approvals = next;
@@ -474,7 +500,7 @@ async function resolveApproval(config, reply) {
     return log(`Rejected answer for ${approval.id}: bad or reused code`);
   }
   if (Date.now() - new Date(approval.created_at).getTime() > APPROVAL_TTL_MS) {
-    return log(`Rejected answer for ${approval.id}: older than 1 hour`);
+    return log(`Rejected answer for ${approval.id}: older than 12 hours`);
   }
   if (reply.decision !== 'allow' && reply.decision !== 'deny') {
     return log(`Rejected answer for ${approval.id}: unknown decision ${reply.decision}`);
