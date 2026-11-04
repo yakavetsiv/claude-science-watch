@@ -56,6 +56,17 @@ struct RelayStats: Codable, Hashable {
     var fraction: Double { min(Double(requestsToday) / Double(max(dailyLimit, 1)), 1) }
 }
 
+/// One Codex account, read by the helper through CodexBar. `limits` holds
+/// the 5-hour ("session") and weekly windows.
+struct CodexAccount: Codable, Hashable, Identifiable {
+    let label: String
+    let limits: [UsageLimit]
+
+    var id: String { label }
+    var fiveHour: UsageLimit? { limits.first { $0.kind == "session" } }
+    var weekly: UsageLimit? { limits.first { $0.kind == "weekly" } }
+}
+
 struct UsageStatus: Codable, Hashable {
     let updatedAt: Date
     let limits: [UsageLimit]
@@ -63,6 +74,7 @@ struct UsageStatus: Codable, Hashable {
     var approvals: [Approval]? = nil
     var replyTopic: String? = nil
     var relay: RelayStats? = nil
+    var codex: [CodexAccount]? = nil
 
     /// A session is waiting on the user: a permission request or a question.
     var needsAttention: Bool {
@@ -88,7 +100,8 @@ struct UsageStatus: Codable, Hashable {
 
     func asOf(_ date: Date) -> UsageStatus {
         UsageStatus(updatedAt: updatedAt, limits: limits.map { $0.asOf(date) }, sessions: sessions,
-                    approvals: approvals, replyTopic: replyTopic, relay: relay)
+                    approvals: approvals, replyTopic: replyTopic, relay: relay,
+                    codex: codex?.map { CodexAccount(label: $0.label, limits: $0.limits.map { $0.asOf(date) }) })
     }
 
     /// Reset times still ahead of `date`, so a widget timeline can show the
@@ -118,6 +131,20 @@ struct UsageStatus: Codable, Hashable {
         ),
         approvals: [Approval(id: "sample", nonce: "", title: "Run python", detail: "import numpy as np",
                              project: "Example project", session: "Test", createdAt: .now)],
-        relay: RelayStats(requestsToday: 12_480, dailyLimit: 100_000)
+        relay: RelayStats(requestsToday: 12_480, dailyLimit: 100_000),
+        codex: [
+            CodexAccount(label: "Acceleration Consortium", limits: [
+                UsageLimit(kind: "session", label: "5-hour", percent: 19, severity: nil,
+                           resetsAt: .now.addingTimeInterval(3 * 3600)),
+                UsageLimit(kind: "weekly", label: "Weekly", percent: 18, severity: nil,
+                           resetsAt: .now.addingTimeInterval(5 * 86400)),
+            ]),
+            CodexAccount(label: "Personal", limits: [
+                UsageLimit(kind: "session", label: "5-hour", percent: 81, severity: nil,
+                           resetsAt: .now.addingTimeInterval(4000)),
+                UsageLimit(kind: "weekly", label: "Weekly", percent: 7, severity: nil,
+                           resetsAt: .now.addingTimeInterval(2 * 86400)),
+            ]),
+        ]
     )
 }

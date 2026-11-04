@@ -50,6 +50,12 @@ const DEFAULT_CONFIG = {
   // When false, notifications say "a session" instead of the project and
   // session names, so no research titles leave this Mac.
   includeNames: true,
+  // Codex limits for every account CodexBar knows, read with its CLI
+  // (https://github.com/steipete/CodexBar). Use the copy inside the app:
+  // only it can use the sign-ins saved in the app (the standalone CLI
+  // download cannot). Null or a missing binary turns this off.
+  codexbarPath: '/Applications/CodexBar.app/Contents/Helpers/CodexBarCLI',
+  codexPollSeconds: 120,
 };
 
 const LIMIT_LABELS = {
@@ -644,6 +650,60 @@ async function listenForReplies(config) {
   }
 }
 
+// ---------- Codex (via CodexBar) ----------
+
+let codexCache = { at: 0, accounts: undefined };
+
+function runCodexbar(config) {
+  return new Promise((resolve, reject) => {
+    execFile(config.codexbarPath,
+      ['usage', '--provider', 'codex', '--all-accounts', '--format', 'json'],
+      { timeout: 60000, maxBuffer: 4 * 1024 * 1024 },
+      (err, stdout) => {
+        // It exits nonzero when one account fails but still prints the rest.
+        try {
+          resolve([].concat(JSON.parse(stdout)));
+        } catch {
+          reject(err ?? new Error('codexbar printed no JSON'));
+        }
+      });
+  });
+}
+
+// One entry per Codex account: its workspace name (never the email) and the
+// session and weekly windows in the same shape as the Claude limits.
+// Fetched every `codexPollSeconds`; between fetches, and after a failure,
+// the last good reading is reused.
+async function checkCodex(config) {
+  if (!config.codexbarPath || !fs.existsSync(config.codexbarPath)) return undefined;
+  if (Date.now() - codexCache.at < config.codexPollSeconds * 1000) return codexCache.accounts;
+  codexCache.at = Date.now();
+  try {
+    const entries = await runCodexbar(config);
+    const accounts = entries.filter((e) => e.provider === 'codex' && e.usage).map((e) => {
+      // "email — Workspace" for a team workspace, the bare email for personal.
+      const workspace = String(e.account ?? '').split(' — ')[1];
+      const window = (w, kind, label) => w && {
+        kind, label,
+        percent: Math.round(w.usedPercent),
+        resets_at: w.resetsAt ? new Date(w.resetsAt).toISOString() : null,
+      };
+      return {
+        label: workspace || 'Personal',
+        limits: [
+          window(e.usage.primary, 'session', '5-hour'),
+          window(e.usage.secondary, 'weekly', 'Weekly'),
+        ].filter(Boolean),
+      };
+    });
+    for (const e of entries) if (e.error) log(`Codex usage: ${e.error.message}`);
+    codexCache.accounts = accounts;
+  } catch (err) {
+    log(`Codex usage failed: ${err.message}`);
+  }
+  return codexCache.accounts;
+}
+
 async function poll(config, { notify = true } = {}) {
   if (!(await daemonRunning(config))) {
     log('Claude Science daemon is not running; skipping');
@@ -690,6 +750,7 @@ async function poll(config, { notify = true } = {}) {
       id, nonce, title, detail, project, session, created_at,
     })),
     reply_topic: config.replyTopic,
+    codex: await checkCodex(config),
   };
   writeJson(STATUS_PATH, status);
 

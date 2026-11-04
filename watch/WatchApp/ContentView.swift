@@ -45,6 +45,11 @@ struct ContentView: View {
                         LimitRow(title: limit.label.replacingOccurrences(of: "Weekly limit", with: "Weekly"),
                                  limit: limit)
                     }
+                    if let codex = current.codex, !codex.isEmpty {
+                        Section("Codex") {
+                            ForEach(codex) { CodexAccountRow(account: $0) }
+                        }
+                    }
                     if let sessions = status.sessions {
                         SessionsSection(sessions: sessions)
                     }
@@ -229,6 +234,46 @@ struct LimitRow: View {
             return rest == 0 ? "Resets in \(minutes / 60) h" : "Resets in \(minutes / 60) h \(rest) min"
         }
         return "Resets \(date.formatted(.dateTime.weekday(.abbreviated).hour().minute()))"
+    }
+}
+
+/// One Codex account: its name, then a short bar for each window with the
+/// percentage and when it resets.
+struct CodexAccountRow: View {
+    let account: CodexAccount
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(account.label)
+                .font(.footnote.weight(.semibold))
+                .lineLimit(1)
+            if let limit = account.fiveHour { window("5-hour", limit) }
+            if let limit = account.weekly { window("Weekly", limit) }
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func window(_ title: String, _ limit: UsageLimit) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack {
+                Text(title).font(.caption2).foregroundStyle(.secondary)
+                Spacer()
+                Text("\(Int(limit.percent.rounded()))%")
+                    .font(.caption2.weight(.semibold).monospacedDigit())
+                    .foregroundStyle(LimitColor.color(for: limit))
+            }
+            Gauge(value: limit.fraction) { EmptyView() }
+                .gaugeStyle(.accessoryLinearCapacity)
+                .tint(LimitColor.color(for: limit))
+            if let resetsAt = limit.resetsAt {
+                TimelineView(.everyMinute) { context in
+                    Text(LimitRow.resetText(resetsAt, now: context.date))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+        }
     }
 }
 

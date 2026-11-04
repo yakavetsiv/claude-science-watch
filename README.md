@@ -31,6 +31,12 @@ When a session asks for permission (for example to run Python or bash), the help
 
 Do not subscribe to the `-status` topic on your phone. It is a data feed for the watch, not alerts.
 
+## Codex limits (optional)
+
+If the [CodexBar](https://github.com/steipete/CodexBar) app is in `/Applications`, the helper runs the CLI bundled inside it (`CodexBar.app/Contents/Helpers/CodexBarCLI`; set `codexbarPath` to change it). The standalone CLI download can't use the accounts saved in the app, so it is not enough on its own. The helper reads the 5-hour and weekly limits for every Codex account CodexBar knows, every 2 minutes (`codexPollSeconds`). The watch app lists them under **Codex**, one card per account, named by workspace ("Personal" for a personal account). Email addresses are not sent.
+
+Add accounts in the CodexBar app (Settings → Providers → Codex). The helper only reads them.
+
 ## Relay (recommended)
 
 ntfy.sh allows 250 messages a day per IP address. Status updates and answers can use that up, and then the watch stops updating until the next day. `relay/` is a small Cloudflare Worker that carries status and answers instead, so ntfy only carries alerts. It fits in Cloudflare's free plan (100,000 requests a day; the helper uses about 30,000).
