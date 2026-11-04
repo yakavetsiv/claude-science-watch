@@ -198,7 +198,8 @@ private func claudeBars(_ status: UsageStatus) -> [(String, UsageLimit?)] {
 }
 
 /// One account (Claude, or a Codex account): its name, then one colored bar
-/// per window. Green under 75 %, orange under 90 %, red above.
+/// per window. The 5-hour bar is green and the weekly bars cyan, as in the
+/// Limit rings complication; any bar turns orange at 75 % and red at 90 %.
 struct AccountLimitsRow: View {
     let name: String
     let bars: [(String, UsageLimit?)]
@@ -219,10 +220,10 @@ struct AccountLimitsRow: View {
                             .frame(width: 24, alignment: .leading)
                         Gauge(value: limit.fraction) { EmptyView() }
                             .gaugeStyle(.accessoryLinearCapacity)
-                            .tint(LimitColor.color(for: limit))
+                            .tint(Self.color(title, limit))
                         Text("\(Int(limit.percent.rounded()))%")
                             .font(.caption2.weight(.semibold).monospacedDigit())
-                            .foregroundStyle(LimitColor.color(for: limit))
+                            .foregroundStyle(Self.color(title, limit))
                             .lineLimit(1)
                             .frame(width: 36, alignment: .trailing)
                     }
@@ -230,6 +231,10 @@ struct AccountLimitsRow: View {
             }
         }
         .padding(.vertical, 2)
+    }
+
+    private static func color(_ title: String, _ limit: UsageLimit) -> Color {
+        title == "5h" || limit.percent >= 75 ? LimitColor.color(for: limit) : .cyan
     }
 }
 
