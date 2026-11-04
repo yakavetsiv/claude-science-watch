@@ -35,19 +35,11 @@ struct ContentView: View {
                             Task { await answer(approval, decision, replyTopic: status.replyTopic) }
                         }
                     }
-                    if let limit = current.fiveHour {
-                        LimitRow(title: "5-hour", limit: limit)
-                    }
-                    if let limit = current.weekly {
-                        LimitRow(title: "Weekly", limit: limit)
-                    }
-                    ForEach(current.limits.filter { $0.kind == "weekly_scoped" && $0.percent > 0 }) { limit in
-                        LimitRow(title: limit.label.replacingOccurrences(of: "Weekly limit", with: "Weekly"),
-                                 limit: limit)
-                    }
-                    if let codex = current.codex, !codex.isEmpty {
-                        Section("Codex") {
-                            ForEach(codex) { CodexAccountRow(account: $0) }
+                    Section("Limits") {
+                        AccountLimitsRow(name: "Claude", bars: claudeBars(current))
+                        ForEach(current.codex ?? []) { account in
+                            AccountLimitsRow(name: "Codex · \(account.label)",
+                                             bars: [("5h", account.fiveHour), ("Wk", account.weekly)])
                         }
                     }
                     if let sessions = status.sessions {
@@ -195,85 +187,49 @@ struct ContentView: View {
     }
 }
 
-struct LimitRow: View {
-    let title: String
-    let limit: UsageLimit
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Text(title).font(.subheadline.weight(.semibold))
-                Spacer()
-                Text("\(Int(limit.percent.rounded()))%")
-                    .font(.subheadline.weight(.semibold).monospacedDigit())
-                    .foregroundStyle(LimitColor.color(for: limit))
-            }
-            Gauge(value: limit.fraction) { EmptyView() }
-                .gaugeStyle(.accessoryLinearCapacity)
-                .tint(LimitColor.color(for: limit))
-            if let resetsAt = limit.resetsAt {
-                // Minutes, not a ticking seconds count, so it stays on one line.
-                TimelineView(.everyMinute) { context in
-                    Text(Self.resetText(resetsAt, now: context.date))
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-            }
-        }
-        .padding(.vertical, 2)
+/// Claude's bars: 5-hour, weekly, and any model-specific weekly limit in use.
+private func claudeBars(_ status: UsageStatus) -> [(String, UsageLimit?)] {
+    var bars: [(String, UsageLimit?)] = [("5h", status.fiveHour), ("Wk", status.weekly)]
+    for limit in status.limits where limit.kind == "weekly_scoped" && limit.percent > 0 {
+        bars.append((String(limit.label.replacingOccurrences(of: "Weekly limit", with: "")
+            .trimmingCharacters(in: CharacterSet(charactersIn: " ()")).prefix(3)), limit))
     }
-
-    /// "Resets in 47 min", "Resets in 3 h 12 min", or "Resets Thu 1:00 AM"
-    /// once it is more than a day away.
-    static func resetText(_ date: Date, now: Date) -> String {
-        let minutes = max(Int(date.timeIntervalSince(now) / 60), 1)
-        if minutes < 60 { return "Resets in \(minutes) min" }
-        if minutes < 24 * 60 {
-            let rest = minutes % 60
-            return rest == 0 ? "Resets in \(minutes / 60) h" : "Resets in \(minutes / 60) h \(rest) min"
-        }
-        return "Resets \(date.formatted(.dateTime.weekday(.abbreviated).hour().minute()))"
-    }
+    return bars
 }
 
-/// One Codex account: its name, then a short bar for each window with the
-/// percentage and when it resets.
-struct CodexAccountRow: View {
-    let account: CodexAccount
+/// One account (Claude, or a Codex account): its name, then one colored bar
+/// per window. Green under 75 %, orange under 90 %, red above.
+struct AccountLimitsRow: View {
+    let name: String
+    let bars: [(String, UsageLimit?)]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(account.label)
+        VStack(alignment: .leading, spacing: 3) {
+            Text(name)
                 .font(.footnote.weight(.semibold))
                 .lineLimit(1)
-            if let limit = account.fiveHour { window("5-hour", limit) }
-            if let limit = account.weekly { window("Weekly", limit) }
-        }
-        .padding(.vertical, 2)
-    }
-
-    private func window(_ title: String, _ limit: UsageLimit) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            HStack {
-                Text(title).font(.caption2).foregroundStyle(.secondary)
-                Spacer()
-                Text("\(Int(limit.percent.rounded()))%")
-                    .font(.caption2.weight(.semibold).monospacedDigit())
-                    .foregroundStyle(LimitColor.color(for: limit))
-            }
-            Gauge(value: limit.fraction) { EmptyView() }
-                .gaugeStyle(.accessoryLinearCapacity)
-                .tint(LimitColor.color(for: limit))
-            if let resetsAt = limit.resetsAt {
-                TimelineView(.everyMinute) { context in
-                    Text(LimitRow.resetText(resetsAt, now: context.date))
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+            ForEach(bars, id: \.0) { title, limit in
+                if let limit {
+                    HStack(spacing: 6) {
+                        Text(title)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .fixedSize()
+                            .frame(width: 24, alignment: .leading)
+                        Gauge(value: limit.fraction) { EmptyView() }
+                            .gaugeStyle(.accessoryLinearCapacity)
+                            .tint(LimitColor.color(for: limit))
+                        Text("\(Int(limit.percent.rounded()))%")
+                            .font(.caption2.weight(.semibold).monospacedDigit())
+                            .foregroundStyle(LimitColor.color(for: limit))
+                            .lineLimit(1)
+                            .frame(width: 36, alignment: .trailing)
+                    }
                 }
             }
         }
+        .padding(.vertical, 2)
     }
 }
 
